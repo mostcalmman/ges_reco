@@ -1,4 +1,5 @@
 import os
+import argparse
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -17,7 +18,7 @@ class GestureDataset(Dataset):
         :param csv_file: CSV文件路径
         :param root_dir: 包含图片的文件夹路径 (如 dataset/Train)
         :param transform: 图像预处理
-        :param is_test: 是否为测试集（测试集没有label_id）
+        :param is_test: 是否为测试集 (测试集没有label_id)
         """
         self.data_frame = pd.read_csv(csv_file)
         self.root_dir = root_dir
@@ -62,9 +63,9 @@ class GestureDataset(Dataset):
 # ==========================================
 # 2. 训练与验证逻辑
 # ==========================================
-def main():
-    # 路径配置 (请确保与您的实际路径一致)
-    DATASET_DIR = "dataset"
+def main(args):
+    # 路径
+    DATASET_DIR = args.dataset
     TRAIN_CSV = os.path.join(DATASET_DIR, "Train.csv")
     VAL_CSV = os.path.join(DATASET_DIR, "Validation.csv")
     TEST_CSV = os.path.join(DATASET_DIR, "Test.csv")
@@ -73,19 +74,14 @@ def main():
     VAL_DIR = os.path.join(DATASET_DIR, "Validation")
     TEST_DIR = os.path.join(DATASET_DIR, "Test")
 
-    # 超参数设置
-    BATCH_SIZE = 8  # 3D卷积占显存较大，可根据你的显卡显存(VRAM)调整大小 (如 4, 8, 16)
+    # 超参数
+    BATCH_SIZE = 8
     EPOCHS = 10
     LEARNING_RATE = 0.001
-    NUM_CLASSES = 27  # 请根据你数据集中最大的 label_id 动态调整 (例如Jester数据集通常是27类)
-    
-    # 动态获取实际包含的类别数（取训练集中最大label_id + 1）
-    train_df = pd.read_csv(TRAIN_CSV)
-    NUM_CLASSES = train_df['label_id'].max() + 1 
+    NUM_CLASSES = 27
 
-    # 设备配置：优先使用 GPU
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"使用设备: {device}")
+    print(f"device: {device}")
 
     # 定义图像预处理 (Resizing 和 归一化)
     transform = transforms.Compose([
@@ -156,7 +152,7 @@ def main():
         
         print(f"Epoch [{epoch+1}/{EPOCHS}] | Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}%")
 
-    print("训练结束！开始在测试集上进行预测...")
+    print("Training completed. Starting test prediction...")
 
     # ==========================================
     # 4. 测试集预测 (因为测试集没有Label，只输出预测结果)
@@ -176,7 +172,10 @@ def main():
     # 将预测结果保存为 CSV
     results_df = pd.DataFrame(test_results)
     results_df.to_csv("test_predictions.csv", index=False)
-    print("测试集预测已完成，结果保存在 'test_predictions.csv'")
+    print("Test prediction completed. Results saved in 'test_predictions.csv'")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="3D ResNet18 Gesture Recognition")
+    parser.add_argument("--dataset", default="dataset", help="训练集路径")
+    args = parser.parse_args()
+    main(args)
