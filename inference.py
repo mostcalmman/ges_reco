@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from dataset import CONFIG, JesterDataset, val_transform
+from dataset import CONFIG, CONFIG_Linux, IS_WINDOWS, IS_LINUX, get_config, JesterDataset, val_transform
 from models import ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel
 
 def parse_args():
@@ -66,7 +66,7 @@ def infer_single_video(args, model, device):
     results_df.to_csv(args.output_csv, index=False)
     print(f"✅ 推理结果已保存至: {args.output_csv}")
 
-def infer_dataset(args, model, device):
+def infer_dataset(args, model, device, config):
     if not os.path.exists(args.csv_path):
         print(f"❌ 找不到 CSV 文件: {args.csv_path}")
         return
@@ -75,11 +75,12 @@ def infer_dataset(args, model, device):
     test_dataset = JesterDataset(
         csv_file=args.csv_path,
         root_dir=args.root_dir,
-        num_frames=CONFIG["num_frames"],
+        num_frames=config["num_frames"],
         transform=val_transform,
         is_test=False 
     )
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=2)
+    # 使用config中的num_workers，Windows上自动为0
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=config["num_workers"], pin_memory=config["pin_memory"])
 
     predictions = []
     video_ids = []
@@ -134,8 +135,14 @@ def infer_dataset(args, model, device):
 
 def run_inference():
     args = parse_args()
-    device = CONFIG["device"]
     
+    # 根据平台获取相应配置
+    config = get_config()
+    device = config["device"]
+    
+    # 打印平台信息
+    platform_name = "Windows" if IS_WINDOWS else ("Linux" if IS_LINUX else "Unknown")
+    print(f"Platform: {platform_name}")
     print(f"正在加载模型并准备推理...")
     print(f"使用设备: {device}")
 
@@ -144,31 +151,31 @@ def run_inference():
         return
 
     if args.model_type == 'resnet_gru':
-        model = ResNetGRUVideoModel(num_classes=CONFIG["num_classes"], hidden_dim=CONFIG["hidden_dim"])
+        model = ResNetGRUVideoModel(num_classes=config["num_classes"], hidden_dim=config["hidden_dim"])
     elif args.model_type == 'lightweight_tsm':
         model = LightweightTSMModel(
-            num_classes=CONFIG.get("num_classes", 27),
-            n_segment=CONFIG.get("num_frames", 37)
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37)
         )
     elif args.model_type == 'ultralight_convgru':
         model = UltraLightConvGRUModel(
-            num_classes=CONFIG.get("num_classes", 27),
-            n_segment=CONFIG.get("num_frames", 37)
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37)
         )
     elif args.model_type == 'lightweight_tsm_resnet':
         model = LightweightTSMResNetModel(
-            num_classes=CONFIG.get("num_classes", 27),
-            n_segment=CONFIG.get("num_frames", 37),
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
             pretrained=False  # 推理时不加载预训练权重
         )
     elif args.model_type == 'ultralight_convgru_resnet':
         model = UltraLightConvGRUResNetModel(
-            num_classes=CONFIG.get("num_classes", 27),
-            n_segment=CONFIG.get("num_frames", 37),
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
             pretrained=False  # 推理时不加载预训练权重
         )
     else:
-        model = ResNetVideoModel(num_classes=CONFIG["num_classes"])
+        model = ResNetVideoModel(num_classes=config["num_classes"])
         
     model.load_state_dict(torch.load(args.model_weight, map_location=device))
     model.to(device)
@@ -177,7 +184,7 @@ def run_inference():
     if args.video_path:
         infer_single_video(args, model, device)
     elif args.csv_path:
-        infer_dataset(args, model, device)
+        infer_dataset(args, model, device, config)
     else:
         print("❌ 请提供 --csv_path (用于数据集) 或 --video_path (用于单视频)")
 

@@ -3,7 +3,7 @@ import argparse
 import torch
 
 from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel
-from dataset import CONFIG
+from dataset import CONFIG, CONFIG_Linux, IS_WINDOWS, IS_LINUX, get_config
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Calculate Model Parameters")
@@ -12,41 +12,51 @@ def parse_args():
 
 def main():
     args = parse_args()
-
-    print(f"\n=== 模型 [{args.model_type}] 参数量统计 ===")
+    
+    # 根据平台获取相应配置
+    config = get_config()
+    
+    # 打印平台信息
+    platform_name = "Windows" if IS_WINDOWS else ("Linux" if IS_LINUX else "Unknown")
+    print(f"\nPlatform: {platform_name}")
+    print(f"=== 模型 [{args.model_type}] 参数量统计 ===")
+    
     if args.model_type == 'resnet_gru':
         model = ResNetGRUVideoModel(
-            num_classes=CONFIG.get("num_classes", 27), 
-            hidden_dim=CONFIG.get("hidden_dim", 256),
+            num_classes=config.get("num_classes", 27), 
+            hidden_dim=config.get("hidden_dim", 256),
             freeze_backbone=True
         )
     elif args.model_type == 'resnet':
         model = ResNetVideoModel(
-            num_classes=CONFIG.get("num_classes", 27),
+            num_classes=config.get("num_classes", 27),
             freeze_backbone=True
         )
     elif args.model_type == 'lightweight_tsm':
         model = LightweightTSMModel(
-            num_classes=CONFIG.get("num_classes", 27),
-            n_segment=CONFIG.get("num_frames", 37)
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37)
         )
     elif args.model_type == 'ultralight_convgru':
         model = UltraLightConvGRUModel(
-            num_classes=CONFIG.get("num_classes", 27),
-            n_segment=CONFIG.get("num_frames", 37)
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37)
         )
     elif args.model_type == 'lightweight_tsm_resnet':
         model = LightweightTSMResNetModel(
-            num_classes=CONFIG.get("num_classes", 27),
-            n_segment=CONFIG.get("num_frames", 37),
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
             pretrained=True
         )
     elif args.model_type == 'ultralight_convgru_resnet':
         model = UltraLightConvGRUResNetModel(
-            num_classes=CONFIG.get("num_classes", 27),
-            n_segment=CONFIG.get("num_frames", 37),
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
             pretrained=True
         )
+    else:
+        print(f"❌ 未知的模型类型: {args.model_type}")
+        return
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

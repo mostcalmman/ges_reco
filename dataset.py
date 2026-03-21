@@ -1,4 +1,5 @@
 import os
+import platform
 import pandas as pd
 import numpy as np
 from PIL import Image
@@ -6,8 +7,11 @@ import torch
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
 
+IS_WINDOWS = platform.system() == "Windows"
+IS_LINUX = platform.system() == "Linux"
+
 # --------------------------
-# 1. 默认配置参数 (将被命令行参数覆盖)
+# Windows配置参数
 # --------------------------
 CONFIG = {
     "data_dir": "dataset",
@@ -26,7 +30,37 @@ CONFIG = {
 }
 
 # --------------------------
-# 2. 数据集加载器 (Dataset)
+# Linux配置参数
+# --------------------------
+CONFIG_Linux = {
+    "data_dir": "dataset",
+    "checkpoint_dir": "checkpoint",
+    "batch_size": 128,
+    "num_workers": 12,
+    "pin_memory": True,
+    "prefetch_factor": 2,
+    "num_frames": 37,
+    "img_size": (100, 176),
+    "num_classes": 27,
+    "hidden_dim": 256,
+    "num_epochs": 20,
+    "learning_rate": 4e-3,
+    "device": "cuda"
+}
+
+# 根据平台自动选择配置
+def get_config():
+    """
+    根据当前操作系统返回相应的配置。
+    Windows平台返回CONFIG
+    Linux平台返回CONFIG_Linux
+    """
+    if IS_LINUX:
+        return CONFIG_Linux.copy()
+    return CONFIG.copy()
+
+# --------------------------
+# 数据集加载器 (Dataset)
 # --------------------------
 class JesterDataset(Dataset):
     def __init__(self, csv_file, root_dir, num_frames=37, transform=None, is_test=False):
