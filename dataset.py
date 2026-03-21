@@ -12,7 +12,7 @@ import torchvision.transforms as transforms
 CONFIG = {
     "data_dir": "dataset",
     "checkpoint_dir": "checkpoint",
-    "batch_size": 48,
+    "batch_size": 16,
     "num_workers": 6,
     "pin_memory": True,
     "prefetch_factor": 2,

@@ -3,3 +3,6 @@ dataset/
 checkpoint/
 results/
 __pycache__/
+temporal-shift-module/
+.sisyphus/
+*.tar

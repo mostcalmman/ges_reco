@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 
 from dataset import CONFIG, JesterDataset, train_transform, val_transform
-from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel
+from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel
 
 # --------------------------
 # 训练和推理流程
@@ -73,6 +73,18 @@ def train_model():
         model = UltraLightConvGRUModel(
             num_classes=CONFIG["num_classes"],
             n_segment=CONFIG["num_frames"]
+        ).to(CONFIG["device"])
+    elif args.model_type == 'lightweight_tsm_resnet':
+        model = LightweightTSMResNetModel(
+            num_classes=CONFIG["num_classes"],
+            n_segment=CONFIG["num_frames"],
+            pretrained=True
+        ).to(CONFIG["device"])
+    elif args.model_type == 'ultralight_convgru_resnet':
+        model = UltraLightConvGRUResNetModel(
+            num_classes=CONFIG["num_classes"],
+            n_segment=CONFIG["num_frames"],
+            pretrained=True
         ).to(CONFIG["device"])
     else:
         model = ResNetVideoModel(

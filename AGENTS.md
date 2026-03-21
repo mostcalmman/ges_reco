@@ -1,61 +1,118 @@
 # AGENTS.md
 
-This repository is dedicated to video-based gesture recognition research using the "20BN-JESTER" dataset (or a subset thereof).
+Guidelines for AI agents working in this gesture recognition repository.
 
 ## Project Overview
 
-- **Dataset**: Located in `dataset/` and `dataset_cut/`.
-- **Primary Script**: `baseline.py` (currently a placeholder for the baseline model implementation).
-- **Environment**: Python 3.14+ with `numpy`, `pillow`, `matplotlib`, and standard scientific libraries.
+PyTorch-based video gesture recognition system using ResNet18 variants (with optional GRU) on the Jester dataset.
 
-## 🛠 Build & Development Commands
+## Commands
 
-Since this is a research/data-science project, there are no traditional "build" steps.
+### Training
+```bash
+# Train ResNet model (default)
+python train.py --model_type resnet --epochs 20 --batch_size 48
 
-- **Run Baseline**: `python baseline.py`
-- **Install Dependencies**: `pip install numpy pillow matplotlib` (and other libraries like `torch` or `tensorflow` as needed for your specific implementation).
-- **Check Environment**: `python --version`
+# Train ResNet+GRU model
+python train.py --model_type resnet_gru --epochs 20 --batch_size 48
+```
 
-### Testing
-There is currently no testing framework (like `pytest`) configured. If you add tests:
-- **Run all tests**: `pytest`
-- **Run a single test**: `pytest tests/test_file.py::test_name`
+### Inference
+```bash
+# Single video inference
+python inference.py --video_path "dataset/Test/100010" --model_type resnet --model_weight "checkpoint/model_resnet.pth"
 
-## 📏 Code Style Guidelines
+# Dataset inference
+python inference.py --csv_path "dataset/Test.csv" --root_dir "dataset/Test" --model_type resnet --model_weight "checkpoint/model_resnet.pth"
+```
 
-Follow standard Python (PEP 8) conventions.
+### Utilities
+```bash
+# Calculate model parameters
+python para_cal.py --model_type resnet
+
+# Split dataset (create test set from train)
+python split_test_set.py --data_dir dataset --sample_size 5000
+```
+
+## Code Style Guidelines
 
 ### Imports
-- Group imports: standard library, third-party libraries, local modules.
-- Use absolute imports where possible.
-- Prefer `from module import specific_item` for frequently used items to keep code concise.
+- Order: standard library → third-party → local modules
+- Example:
+```python
+import os
+import argparse
+import pandas as pd
+import torch
+from dataset import CONFIG, JesterDataset
+```
 
-### Formatting & Types
-- Use **4 spaces** for indentation.
-- Use **Type Hints** for all function signatures (e.g., `def process_image(path: str) -> np.ndarray:`).
-- Keep lines under **88-100 characters** (consistent with Black/Ruff standards).
+### Configuration
+- Global config lives in `dataset.py` as `CONFIG` dict
+- Override via command-line arguments using `argparse`
+- Key configs: `data_dir`, `checkpoint_dir`, `batch_size`, `num_frames`, `device`
 
 ### Naming Conventions
-- **Files/Modules**: `snake_case.py`
-- **Classes**: `PascalCase`
-- **Functions/Variables**: `snake_case`
-- **Constants**: `UPPER_SNAKE_CASE`
+- Classes: `PascalCase` (e.g., `ResNetVideoModel`, `JesterDataset`)
+- Functions: `snake_case` (e.g., `parse_args`, `train_model`)
+- Constants: `UPPER_CASE` in CONFIG dict
+- Private methods: `_leading_underscore` (e.g., `_sample_indices`)
+
+### Type Annotations
+- Not currently used; optional for new code
+- If adding, use Python 3.9+ syntax: `list[str]`, `dict[str, int]`
+
+### Comments
+- Chinese comments acceptable (项目现有中文注释)
+- Use `# MARK:` for section headers
+- Use `# --------------------------` for visual separation
 
 ### Error Handling
-- Use specific exceptions (e.g., `FileNotFoundError`, `ValueError`) rather than generic `Exception`.
-- Use `try...except` blocks for I/O operations and data loading.
-- Log errors or use `print()` for debugging in research scripts, but prefer logging for production-ready code.
+- Use try/except for file operations with fallback defaults
+- Example: missing frames fallback to black image
 
-## 📁 Data Structure
+### Model Patterns
+- Inherit from `nn.Module`
+- Implement `__init__` and `forward`
+- Use `freeze_backbone=True` to freeze ResNet layers (unfreeze layer4)
 
-- `dataset/`: Contains the full dataset.
-  - `Train.csv`, `Validation.csv`, `Test.csv`: Metadata and labels.
-  - `Train/`, `Validation/`, `Test/`: Folders named by `id`, containing JPEG frames (`00001.jpg`, etc.).
-- `dataset_cut/`: A subset of the dataset for faster iteration.
+## Project Structure
 
-## 🤖 Agent Instructions
+```
+.
+├── dataset.py          # Dataset loader, transforms, CONFIG
+├── models.py           # ResNetVideoModel, ResNetGRUVideoModel
+├── train.py            # Training loop with early stopping
+├── inference.py        # Single video & dataset inference
+├── para_cal.py         # Model parameter counter
+├── split_test_set.py   # Dataset splitting utility
+├── checkpoint/         # Model weights & results (gitignored)
+└── dataset/            # Data directory (gitignored)
+```
 
-- **Baseline Implementation**: When implementing `baseline.py`, focus on efficient data loading (using `Pillow` and `numpy`) and model definition.
-- **Git Protocol**: Atomic commits with clear messages. Do not commit large data files or CSVs unless explicitly asked.
-- **Diagnostics**: Run `lsp_diagnostics` or basic syntax checks before completing a task.
-- **Patterns**: Look at the structure of `dataset/` before writing data loaders. Note that `frames` in CSV indicates the number of images in the corresponding directory.
+## Dependencies
+
+Core requirements (inferred from imports):
+- `torch` + `torchvision`
+- `pandas`
+- `numpy`
+- `Pillow` (PIL)
+- `matplotlib`
+- `tqdm`
+
+No formal requirements.txt exists; install manually as needed.
+
+## Device Handling
+
+Always use `CONFIG["device"]` (auto-detects CUDA/CPU):
+```python
+model.to(CONFIG["device"])
+inputs = inputs.to(CONFIG["device"])
+```
+
+## Data Format
+
+- Input: Video frames as `.jpg` files in folders
+- CSV format: `video_id`, `frames`, `label_id` (Train/Val) or `id`, `frames` (Test)
+- Frame naming: `{frame_num:05d}.jpg` (e.g., `00001.jpg`)

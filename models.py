@@ -8,6 +8,8 @@ Model variants:
     ResNetGRUVideoModel          — ResNet18 backbone + GRU temporal aggregation
     LightweightTSMModel          — Shallow TSM-ResNet, no ConvGRU (< 3M params)
     UltraLightConvGRUModel       — 3-layer TSM-ResNet + ConvGRU (< 2.5M params)
+    LightweightTSMResNetModel    — ResNet18-channel TSM with pretrained weights
+    UltraLightConvGRUResNetModel — ResNet18-channel ConvGRU with pretrained weights
 """
 
 import torch
@@ -17,7 +19,75 @@ import torchvision.models as models
 
 from modules import TSMResBlock, ConvGRU
 
-modelList = ['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru']
+modelList = ['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru', 
+             'lightweight_tsm_resnet', 'ultralight_convgru_resnet']
+
+
+def _load_resnet18_weights_to_tsm(target_model, pretrained_resnet):
+    """Load ResNet18 pretrained weights into TSMResBlock layers.
+    
+    ResNet18 has 2 BasicBlocks per layer. We map the first BasicBlock's weights
+    to our single TSMResBlock per layer.
+    
+    Mapping:
+        ResNet18.layerX.0.{conv1,bn1,conv2,bn2,downsample} 
+        -> target_model.layerX.{conv1,bn1,conv2,bn2,shortcut}
+    
+    Args:
+        target_model: Model with layer1, layer2, layer3, (layer4) TSMResBlocks
+        pretrained_resnet: Pretrained ResNet18 model from torchvision
+    """
+    source_state = pretrained_resnet.state_dict()
+    target_state = target_model.state_dict()
+    
+    # Map layer indices: ResNet18 layer1 -> our layer1, etc.
+    # ResNet18 has 2 blocks per layer (0 and 1), we take block 0
+    layer_names = ['layer1', 'layer2', 'layer3']
+    if hasattr(target_model, 'layer4'):
+        layer_names.append('layer4')
+    
+    loaded_keys = []
+    for layer_name in layer_names:
+        if not hasattr(target_model, layer_name):
+            continue
+            
+        # Map conv1, bn1, conv2, bn2
+        for block_idx in range(2):  # 0 and 1 for conv/bn layers
+            src_prefix = f'{layer_name}.0.conv{block_idx+1}'
+            tgt_prefix = f'{layer_name}.conv{block_idx+1}'
+            
+            # Conv weight
+            src_key = f'{src_prefix}.weight'
+            tgt_key = f'{tgt_prefix}.weight'
+            if src_key in source_state and tgt_key in target_state:
+                target_state[tgt_key].copy_(source_state[src_key])
+                loaded_keys.append(tgt_key)
+            
+            # BN: weight, bias, running_mean, running_var
+            for bn_param in ['weight', 'bias', 'running_mean', 'running_var', 'num_batches_tracked']:
+                src_key = f'{src_prefix.replace("conv", "bn")}.{bn_param}'
+                tgt_key = f'{tgt_prefix.replace("conv", "bn")}.{bn_param}'
+                if src_key in source_state and tgt_key in target_state:
+                    target_state[tgt_key].copy_(source_state[src_key])
+                    loaded_keys.append(tgt_key)
+        
+        # Map shortcut (downsample in ResNet) if exists
+        src_downsample_key = f'{layer_name}.0.downsample.0.weight'
+        tgt_shortcut_key = f'{layer_name}.shortcut.0.weight'
+        if src_downsample_key in source_state and tgt_shortcut_key in target_state:
+            target_state[tgt_shortcut_key].copy_(source_state[src_downsample_key])
+            loaded_keys.append(tgt_shortcut_key)
+            
+            # Map BN in shortcut
+            for bn_param in ['weight', 'bias', 'running_mean', 'running_var', 'num_batches_tracked']:
+                src_key = f'{layer_name}.0.downsample.1.{bn_param}'
+                tgt_key = f'{layer_name}.shortcut.1.{bn_param}'
+                if src_key in source_state and tgt_key in target_state:
+                    target_state[tgt_key].copy_(source_state[src_key])
+                    loaded_keys.append(tgt_key)
+    
+    print(f"Loaded {len(loaded_keys)} parameters from ResNet18 pretrained weights")
+    return loaded_keys
 
 # --------------------------
 # MARK: ResNet18 Baseline
@@ -232,5 +302,153 @@ class UltraLightConvGRUModel(nn.Module):
 
         x = F.adaptive_avg_pool2d(x, (1, 1))    # (B, 128, 1, 1)
         x = x.view(b, -1)                       # (B, 128)
+        out = self.fc(x)                        # (B, num_classes)
+        return out
+
+
+# --------------------------
+# MARK: ResNet18-channel TSM Models (with pretrained weights)
+# --------------------------
+
+class LightweightTSMResNetModel(nn.Module):
+    """Lightweight TSM model with ResNet18 channel dimensions.
+
+    Architecture:
+        Conv1 (3->64, stride=2) -> 4x TSMResBlock [64->128->256->512]
+        -> temporal mean pooling -> GlobalAvgPool -> FC
+
+    Uses ResNet18 channel progression (64, 128, 256, 512) to enable loading
+    pretrained ImageNet weights from ResNet18 backbone.
+    Target: ~4M parameters (higher than LightweightTSMModel but better convergence).
+
+    Args:
+        num_classes: Number of output classes (default 27 for Jester).
+        n_segment: Number of temporal segments (sampled frames).
+        pretrained: If True, load ResNet18 pretrained weights into backbone.
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, pretrained=True):
+        super(LightweightTSMResNetModel, self).__init__()
+        self.n_segment = n_segment
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True)
+        )
+
+        # ResNet18 channel progression: 64 -> 128 -> 256 -> 512
+        self.layer1 = TSMResBlock(64, 64, stride=1, n_segment=n_segment)
+        self.layer2 = TSMResBlock(64, 128, stride=2, n_segment=n_segment)
+        self.layer3 = TSMResBlock(128, 256, stride=2, n_segment=n_segment)
+        self.layer4 = TSMResBlock(256, 512, stride=2, n_segment=n_segment)
+
+        self.fc = nn.Linear(512, num_classes)
+
+        # Load ResNet18 pretrained weights
+        if pretrained:
+            resnet_pretrained = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+            # ResNet18 conv1 is Conv2d(3,64,7,2,3), our conv1 is Sequential with same layer
+            self.conv1[0].load_state_dict(resnet_pretrained.conv1.state_dict())
+            self.conv1[1].load_state_dict(resnet_pretrained.bn1.state_dict())
+            _load_resnet18_weights_to_tsm(self, resnet_pretrained)
+            print(f"Loaded ResNet18 pretrained weights into {self.__class__.__name__}")
+
+    def forward(self, x):
+        """
+        Args:
+            x: (B, T, 3, H, W) video frame sequence.
+        Returns:
+            (B, num_classes) classification logits.
+        """
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
+        x = self.conv1(x)                       # (B*T, 64, H/4, W/4)
+        x = self.layer1(x)                      # (B*T, 64, H/4, W/4)
+        x = self.layer2(x)                      # (B*T, 128, H/8, W/8)
+        x = self.layer3(x)                      # (B*T, 256, H/16, W/16)
+        x = self.layer4(x)                      # (B*T, 512, H/32, W/32)
+
+        _, c_out, h_out, w_out = x.size()
+        x = x.view(b, t, c_out, h_out, w_out)   # (B, T, 512, H/32, W/32)
+        x = x.mean(dim=1)                       # (B, 512, H/32, W/32)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))    # (B, 512, 1, 1)
+        x = x.view(b, -1)                       # (B, 512)
+        out = self.fc(x)                        # (B, num_classes)
+        return out
+
+
+class UltraLightConvGRUResNetModel(nn.Module):
+    """Ultra-lightweight ConvGRU model with ResNet18 channel dimensions.
+
+    Architecture:
+        Conv1 (3->64, stride=2) -> 3x TSMResBlock [64->128->256]
+        -> SpatialPool (7x7) -> ConvGRU (256->256) -> GlobalAvgPool -> FC
+
+    Uses ResNet18 channel progression (64, 128, 256) for first 3 layers
+    to enable loading pretrained ImageNet weights. Attaches ConvGRU after
+    layer3 for temporal aggregation.
+    Target: ~3.5M parameters.
+
+    Args:
+        num_classes: Number of output classes (default 27 for Jester).
+        n_segment: Number of temporal segments (sampled frames).
+        pretrained: If True, load ResNet18 pretrained weights into backbone.
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, pretrained=True):
+        super(UltraLightConvGRUResNetModel, self).__init__()
+        self.n_segment = n_segment
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True)
+        )
+
+        # ResNet18 channel progression for first 3 layers: 64 -> 128 -> 256
+        self.layer1 = TSMResBlock(64, 64, stride=1, n_segment=n_segment)
+        self.layer2 = TSMResBlock(64, 128, stride=2, n_segment=n_segment)
+        self.layer3 = TSMResBlock(128, 256, stride=2, n_segment=n_segment)
+        # No layer4 — ConvGRU attaches directly after layer3
+
+        self.convgru = ConvGRU(input_channels=256, hidden_channels=256)
+
+        self.fc = nn.Linear(256, num_classes)
+
+        # Load ResNet18 pretrained weights (layer1-3)
+        if pretrained:
+            resnet_pretrained = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+            self.conv1[0].load_state_dict(resnet_pretrained.conv1.state_dict())
+            self.conv1[1].load_state_dict(resnet_pretrained.bn1.state_dict())
+            _load_resnet18_weights_to_tsm(self, resnet_pretrained)
+            print(f"Loaded ResNet18 pretrained weights into {self.__class__.__name__}")
+
+    def forward(self, x):
+        """
+        Args:
+            x: (B, T, 3, H, W) video frame sequence.
+        Returns:
+            (B, num_classes) classification logits.
+        """
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
+        x = self.conv1(x)                       # (B*T, 64, H/4, W/4)
+        x = self.layer1(x)                      # (B*T, 64, H/4, W/4)
+        x = self.layer2(x)                      # (B*T, 128, H/8, W/8)
+        x = self.layer3(x)                      # (B*T, 256, H/16, W/16)
+
+        # 降低空间分辨率, 减少 ConvGRU 计算量和显存占用
+        x = F.adaptive_avg_pool2d(x, (7, 7))    # (B*T, 256, 7, 7)
+
+        _, c_out, h_out, w_out = x.size()
+        x = x.view(b, t, c_out, h_out, w_out)   # (B, T, 256, 7, 7)
+        x = self.convgru(x)                     # (B, 256, 7, 7)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))    # (B, 256, 1, 1)
+        x = x.view(b, -1)                       # (B, 256)
         out = self.fc(x)                        # (B, num_classes)
         return out
