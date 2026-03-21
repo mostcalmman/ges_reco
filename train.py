@@ -14,18 +14,17 @@ from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, Lightweight
 # 训练和推理流程
 # --------------------------
 def parse_args():
+    config = get_config()
     parser = argparse.ArgumentParser(description="Gesture Recognition Training")
     parser.add_argument("--model_type", type=str, choices=modelList, default='resnet', help="使用的模型结构")
-    parser.add_argument("--data_dir", type=str, default=CONFIG["data_dir"], help="数据集所在的目录")
-    parser.add_argument("--checkpoint_dir", type=str, default=CONFIG["checkpoint_dir"], help="模型和预测结果保存的目录")
-    parser.add_argument("--batch_size", type=int, default=CONFIG["batch_size"])
-    parser.add_argument("--epochs", type=int, default=CONFIG["num_epochs"])
+    parser.add_argument("--data_dir", type=str, default=config["data_dir"], help="数据集所在的目录")
+    parser.add_argument("--checkpoint_dir", type=str, default=config["checkpoint_dir"], help="模型和预测结果保存的目录")
+    parser.add_argument("--batch_size", type=int, default=config["batch_size"])
+    parser.add_argument("--epochs", type=int, default=config["num_epochs"])
     return parser.parse_args()
 
 def train_model():
     args = parse_args()
-    
-    # 根据平台获取相应配置
     config = get_config()
     
     # 更新配置
@@ -40,6 +39,7 @@ def train_model():
     platform_name = "Windows" if IS_WINDOWS else ("Linux" if IS_LINUX else platform.system())
     print(f"Platform: {platform_name}")
     print(f"Using device: {config['device']}")
+    print(f"Batchsize: {config['batch_size']}")
     print(f"num_workers: {config['num_workers']}, pin_memory: {config['pin_memory']}")
     print(f"Model Type: {args.model_type}")
     print(f"Data Directory: {config['data_dir']}")
@@ -302,4 +302,4 @@ def train_model():
 if __name__ == "__main__":
     train_model()
 
-# python train.py --model_type ultralight_convgru --checkpoint_dir .\checkpoint\ultraLight
+# python train.py --model_type ultralight_convgru --checkpoint_dir ./checkpoint/ultraLight
