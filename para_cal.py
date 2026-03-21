@@ -2,12 +2,12 @@ import os
 import argparse
 import torch
 
-from models import ResNetVideoModel, ResNetGRUVideoModel
+from models import ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel
 from dataset import CONFIG
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Calculate Model Parameters")
-    parser.add_argument("--model_type", type=str, choices=['resnet', 'resnet_gru'], required=True, help="使用的模型结构名称")
+    parser.add_argument("--model_type", type=str, choices=['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru'], required=True, help="使用的模型结构名称")
     return parser.parse_args()
 
 def main():
@@ -25,7 +25,17 @@ def main():
             num_classes=CONFIG.get("num_classes", 27),
             freeze_backbone=True
         )
-    
+    elif args.model_type == 'lightweight_tsm':
+        model = LightweightTSMModel(
+            num_classes=CONFIG.get("num_classes", 27),
+            n_segment=CONFIG.get("num_frames", 37)
+        )
+    elif args.model_type == 'ultralight_convgru':
+        model = UltraLightConvGRUModel(
+            num_classes=CONFIG.get("num_classes", 27),
+            n_segment=CONFIG.get("num_frames", 37)
+        )
+
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     frozen_params = total_params - trainable_params

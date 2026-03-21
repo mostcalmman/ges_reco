@@ -7,14 +7,14 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 
 from dataset import CONFIG, JesterDataset, train_transform, val_transform
-from models import ResNetVideoModel, ResNetGRUVideoModel
+from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel
 
 # --------------------------
 # 训练和推理流程
 # --------------------------
 def parse_args():
     parser = argparse.ArgumentParser(description="Gesture Recognition Training")
-    parser.add_argument("--model_type", type=str, choices=['resnet', 'resnet_gru'], default='resnet', help="使用的模型结构")
+    parser.add_argument("--model_type", type=str, choices=modelList, default='resnet', help="使用的模型结构")
     parser.add_argument("--data_dir", type=str, default=CONFIG["data_dir"], help="数据集所在的目录")
     parser.add_argument("--checkpoint_dir", type=str, default=CONFIG["checkpoint_dir"], help="模型和预测结果保存的目录")
     parser.add_argument("--batch_size", type=int, default=CONFIG["batch_size"])
@@ -63,6 +63,16 @@ def train_model():
             num_classes=CONFIG["num_classes"], 
             hidden_dim=CONFIG["hidden_dim"],
             freeze_backbone=True
+        ).to(CONFIG["device"])
+    elif args.model_type == 'lightweight_tsm':
+        model = LightweightTSMModel(
+            num_classes=CONFIG["num_classes"],
+            n_segment=CONFIG["num_frames"]
+        ).to(CONFIG["device"])
+    elif args.model_type == 'ultralight_convgru':
+        model = UltraLightConvGRUModel(
+            num_classes=CONFIG["num_classes"],
+            n_segment=CONFIG["num_frames"]
         ).to(CONFIG["device"])
     else:
         model = ResNetVideoModel(
@@ -272,4 +282,4 @@ def train_model():
 if __name__ == "__main__":
     train_model()
 
-# python train.py --model_type resnet
+# python train.py --model_type ultralight_convgru --checkpoint_dir .\checkpoint\ultraLight

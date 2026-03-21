@@ -10,11 +10,11 @@ from torch.utils.data import DataLoader
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from dataset import CONFIG, JesterDataset, val_transform
-from models import ResNetVideoModel, ResNetGRUVideoModel
+from models import ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Gesture Recognition Inference")
-    parser.add_argument("--model_type", type=str, choices=['resnet', 'resnet_gru'], default='resnet', help="使用的模型结构")
+    parser.add_argument("--model_type", type=str, choices=['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru'], default='resnet', help="使用的模型结构")
     parser.add_argument("--csv_path", type=str, default="", help="要推理的 CSV 文件路径(数据集推理)")
     parser.add_argument("--root_dir", type=str, default="dataset/Test", help="要推理的视频图片根目录")
     parser.add_argument("--video_path", type=str, default="", help="单个视频文件夹路径(单视频推理)")
@@ -145,6 +145,16 @@ def run_inference():
 
     if args.model_type == 'resnet_gru':
         model = ResNetGRUVideoModel(num_classes=CONFIG["num_classes"], hidden_dim=CONFIG["hidden_dim"])
+    elif args.model_type == 'lightweight_tsm':
+        model = LightweightTSMModel(
+            num_classes=CONFIG.get("num_classes", 27),
+            n_segment=CONFIG.get("num_frames", 37)
+        )
+    elif args.model_type == 'ultralight_convgru':
+        model = UltraLightConvGRUModel(
+            num_classes=CONFIG.get("num_classes", 27),
+            n_segment=CONFIG.get("num_frames", 37)
+        )
     else:
         model = ResNetVideoModel(num_classes=CONFIG["num_classes"])
         
