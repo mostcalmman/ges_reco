@@ -1,52 +1,72 @@
-import torch
-from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
 import os
 import argparse
 import pandas as pd
+import torch
 import sys
+import numpy as np
+from PIL import Image
+from torch.utils.data import DataLoader
 
-# 动态添加当前目录到系统路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from baseline import LightweightVideoModel, CONFIG, JesterDataset
+from dataset import CONFIG, JesterDataset, val_transform
+from models import ResNetVideoModel, ResNetGRUVideoModel
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Gesture Recognition Inference")
-    parser.add_argument("--csv_path", type=str, default="dataset/Test.csv", help="要推理的 CSV 文件路径")
+    parser.add_argument("--model_type", type=str, choices=['resnet', 'resnet_gru'], default='resnet', help="使用的模型结构")
+    parser.add_argument("--csv_path", type=str, default="", help="要推理的 CSV 文件路径(数据集推理)")
     parser.add_argument("--root_dir", type=str, default="dataset/Test", help="要推理的视频图片根目录")
-    parser.add_argument("--model_weight", type=str, default="checkpoint/lightweight_gesture_model.pth", help="模型权重文件路径")
+    parser.add_argument("--video_path", type=str, default="", help="单个视频文件夹路径(单视频推理)")
+    parser.add_argument("--model_weight", type=str, required=True, help="模型权重文件路径")
     parser.add_argument("--output_csv", type=str, default="checkpoint/inference_results.csv", help="推理结果输出的 CSV 文件路径")
     parser.add_argument("--batch_size", type=int, default=16, help="推理时的 Batch Size")
     return parser.parse_args()
 
-def run_inference():
-    args = parse_args()
-    device = CONFIG["device"]
+def infer_single_video(args, model, device):
+    print(f"正在对单个视频进行推理: {args.video_path}")
     
-    print(f"正在加载模型并准备推理...")
-    print(f"使用设备: {device}")
-
-    # 1. 检查并加载模型
-    if not os.path.exists(args.model_weight):
-        print(f"❌ 找不到模型权重文件: {args.model_weight}")
-        print("请先运行 python baseline.py 训练模型！")
+    frames = []
+    if os.path.exists(args.video_path):
+        frame_files = sorted([f for f in os.listdir(args.video_path) if f.endswith('.jpg')])
+        total_frames = len(frame_files)
+        
+        if total_frames <= CONFIG["num_frames"]:
+            indices = np.linspace(1, total_frames, total_frames, dtype=int)
+            padding = np.ones(CONFIG["num_frames"] - total_frames, dtype=int) * total_frames
+            indices = np.concatenate((indices, padding))
+        else:
+            indices = np.linspace(1, total_frames, CONFIG["num_frames"], dtype=int)
+            
+        for i in indices:
+            frame_name = f"{i:05d}.jpg"
+            img_path = os.path.join(args.video_path, frame_name)
+            try:
+                img = Image.open(img_path).convert('RGB')
+            except FileNotFoundError:
+                img = Image.new('RGB', (CONFIG["img_size"][1], CONFIG["img_size"][0]), color=0)
+            img = val_transform(img)
+            frames.append(img)
+            
+    if not frames:
+        print("未找到视频帧，请检查路径。")
         return
+        
+    inputs = torch.stack(frames).unsqueeze(0).to(device)
+    
+    with torch.no_grad():
+        outputs = model(inputs)
+        _, predicted = outputs.max(1)
+        
+    pred_label = predicted.item()
+    print(f"✅ 单视频推理完成! 预测标签 ID: {pred_label}")
+    
+    results_df = pd.DataFrame({"video_path": [args.video_path], "predicted_label_id": [pred_label]})
+    os.makedirs(os.path.dirname(args.output_csv), exist_ok=True)
+    results_df.to_csv(args.output_csv, index=False)
+    print(f"✅ 推理结果已保存至: {args.output_csv}")
 
-    # 这里需要确保推断的类别数与训练时一致，通常从训练集的配置或模型本身推断
-    model = LightweightVideoModel(num_classes=CONFIG["num_classes"], hidden_dim=CONFIG["hidden_dim"])
-    model.load_state_dict(torch.load(args.model_weight, map_location=device))
-    model.to(device)
-    model.eval()
-
-    # 2. 图像预处理 (必须和训练时验证集的处理一致)
-    val_transform = transforms.Compose([
-        transforms.Resize(CONFIG["img_size"]),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-
-    # 3. 准备 Dataset 和 DataLoader
+def infer_dataset(args, model, device):
     if not os.path.exists(args.csv_path):
         print(f"❌ 找不到 CSV 文件: {args.csv_path}")
         return
@@ -57,11 +77,10 @@ def run_inference():
         root_dir=args.root_dir,
         num_frames=CONFIG["num_frames"],
         transform=val_transform,
-        is_test=False # 设置为 False 以便 JesterDataset 尝试读取标签
+        is_test=False 
     )
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=2)
 
-    # 4. 开始推理
     predictions = []
     video_ids = []
     
@@ -81,7 +100,6 @@ def run_inference():
             outputs = model(inputs)
             _, predicted = outputs.max(1)
             
-            # 检查这批数据是否有真实标签 (不是 -1)
             if labels[0].item() != -1:
                 has_labels = True
                 loss = criterion(outputs, labels)
@@ -92,11 +110,9 @@ def run_inference():
             predictions.extend(predicted.cpu().numpy())
             video_ids.extend(v_ids)
             
-            # 简单打印进度
             if (i + 1) % 10 == 0 or (i + 1) == len(test_loader):
                 print(f"推理进度: [{i+1}/{len(test_loader)}]")
 
-    # 5. 输出结果和指标
     print("-" * 30)
     if has_labels and test_total > 0:
         final_loss = test_loss / len(test_loader)
@@ -105,9 +121,8 @@ def run_inference():
         print(f"   Loss: {final_loss:.4f}")
         print(f"   Accuracy: {final_acc:.2f}%")
     else:
-        print("⚠️ 推理的数据集没有提供正确结果的标签，已跳过 Loss 和 Acc 计算。")
+        print("⚠️ 推理的数据集没有提供真实标签，已跳过 Loss 和 Acc 计算。")
 
-    # 6. 保存预测结果到 CSV
     results_df = pd.DataFrame({
         "video_id": video_ids,
         "predicted_label_id": predictions
@@ -117,5 +132,38 @@ def run_inference():
     results_df.to_csv(args.output_csv, index=False)
     print(f"✅ 推理完成！预测结果已保存至: {args.output_csv}")
 
+def run_inference():
+    args = parse_args()
+    device = CONFIG["device"]
+    
+    print(f"正在加载模型并准备推理...")
+    print(f"使用设备: {device}")
+
+    if not os.path.exists(args.model_weight):
+        print(f"❌ 找不到模型权重文件: {args.model_weight}")
+        return
+
+    if args.model_type == 'resnet_gru':
+        model = ResNetGRUVideoModel(num_classes=CONFIG["num_classes"], hidden_dim=CONFIG["hidden_dim"])
+    else:
+        model = ResNetVideoModel(num_classes=CONFIG["num_classes"])
+        
+    model.load_state_dict(torch.load(args.model_weight, map_location=device))
+    model.to(device)
+    model.eval()
+
+    if args.video_path:
+        infer_single_video(args, model, device)
+    elif args.csv_path:
+        infer_dataset(args, model, device)
+    else:
+        print("❌ 请提供 --csv_path (用于数据集) 或 --video_path (用于单视频)")
+
 if __name__ == "__main__":
     run_inference()
+
+# 执行单视频推断:
+# python inference.py --video_path "dataset/Test/100010" --model_type "resnet" --model_weight "checkpoint/lightweight_gesture_model.pth"
+
+# 执行整个测试集推断（自动结算 Loss / Acc 等）:
+# python inference.py --csv_path "dataset/Test.csv" --root_dir "dataset/Test" --model_type "resnet" --model_weight "checkpoint/lightweight_gesture_model.pth"

@@ -2,3 +2,4 @@ dataset/
 .vscode/
 checkpoint/
 results/
+__pycache__/
