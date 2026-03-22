@@ -35,7 +35,7 @@ CONFIG = {
 CONFIG_Linux = {
     "data_dir": "dataset",
     "checkpoint_dir": "checkpoint",
-    "batch_size": 128,
+    "batch_size": 96,
     "num_workers": 12,
     "pin_memory": True,
     "prefetch_factor": 2,
@@ -43,7 +43,7 @@ CONFIG_Linux = {
     "img_size": (100, 176),
     "num_classes": 27,
     "hidden_dim": 256,
-    "num_epochs": 20,
+    "num_epochs": 100,
     "learning_rate": 4e-3,
     "device": "cuda"
 }
