@@ -19,8 +19,8 @@ import torchvision.models as models
 
 from modules import TSMResBlock, ConvGRU
 
-modelList = ['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru', 
-             'lightweight_tsm_resnet', 'ultralight_convgru_resnet']
+modelList = ['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru',
+             'ultralight_convgru_pooled', 'lightweight_tsm_resnet', 'ultralight_convgru_resnet']
 
 
 def _load_resnet18_weights_to_tsm(target_model, pretrained_resnet):
@@ -90,7 +90,7 @@ def _load_resnet18_weights_to_tsm(target_model, pretrained_resnet):
     return loaded_keys
 
 # --------------------------
-# MARK: ResNet18 Baseline
+# MARK: ResNet18
 # --------------------------
 
 class ResNetVideoModel(nn.Module):
@@ -129,7 +129,7 @@ class ResNetVideoModel(nn.Module):
 
 
 # --------------------------
-# MARK: ResNet18 + GRU
+# MARK: +GRU
 # --------------------------
 
 class ResNetGRUVideoModel(nn.Module):
@@ -177,7 +177,7 @@ class ResNetGRUVideoModel(nn.Module):
 
 
 # --------------------------
-# MARK: Lightweight TSM Only
+# MARK: Light TSM
 # --------------------------
 
 class LightweightTSMModel(nn.Module):
@@ -239,7 +239,8 @@ class LightweightTSMModel(nn.Module):
 
 
 # --------------------------
-# MARK: Ultra-light TSM + ConvGRU
+# MARK: Ultralight
+# TSM + ConGRU
 # --------------------------
 
 class UltraLightConvGRUModel(nn.Module):
@@ -247,11 +248,11 @@ class UltraLightConvGRUModel(nn.Module):
 
     Architecture:
         Conv1 (3->32, stride=2) -> 3x TSMResBlock [32->64->128]
-        -> SpatialPool (7x7) -> ConvGRU (128->128) -> GlobalAvgPool -> FC
+        -> ConvGRU (128->128) -> GlobalAvgPool -> FC
 
     Removes layer4 entirely, attaching ConvGRU after layer3 at 128 channels
-    for maximum parameter reduction. Spatial pooling before ConvGRU reduces
-    the feature map size to limit ConvGRU compute and memory cost.
+    for maximum parameter reduction. Preserves full spatial resolution from
+    layer3 output for ConvGRU to maintain spatial-temporal feature learning.
     Target: < 2.5M parameters.
 
     Args:
@@ -293,12 +294,80 @@ class UltraLightConvGRUModel(nn.Module):
         x = self.layer2(x)                      # (B*T, 64, H/4, W/4)
         x = self.layer3(x)                      # (B*T, 128, H/8, W/8)
 
+        # 输入尺寸100x176时, layer3输出为12x22 (H/8=12, W/8=22)
+        _, c_out, h_out, w_out = x.size()
+        x = x.view(b, t, c_out, h_out, w_out)   # (B, T, 128, H/8, W/8)
+        x = self.convgru(x)                     # (B, 128, H/8, W/8)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))    # (B, 128, 1, 1)
+        x = x.view(b, -1)                       # (B, 128)
+        out = self.fc(x)                        # (B, num_classes)
+        return out
+
+# --------------------------
+# MARK: UltraLight-
+# TSM + ConGRU, convGRU前缩特征图
+# --------------------------
+
+class UltraLightConvGRUPooledModel(nn.Module):
+    """Ultra-lightweight model with spatial pooling before ConvGRU.
+
+    Architecture:
+        Conv1 (3->32, stride=2) -> 3x TSMResBlock [32->64->128]
+        -> SpatialPool (7x7) -> ConvGRU (128->128) -> GlobalAvgPool -> FC
+
+    Similar to UltraLightConvGRUModel but adds spatial pooling before ConvGRU
+    to reduce computational cost. Trades some spatial precision for efficiency.
+    Target: < 2.5M parameters, lower compute than full-resolution version.
+
+    Args:
+        num_classes: Number of output classes (default 27 for Jester).
+        n_segment: Number of temporal segments (sampled frames).
+        pool_size: Spatial pooling size before ConvGRU (default 7).
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, pool_size=7):
+        super(UltraLightConvGRUPooledModel, self).__init__()
+        self.n_segment = n_segment
+        self.pool_size = pool_size
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.layer1 = TSMResBlock(32, 32, stride=1, n_segment=n_segment)
+        self.layer2 = TSMResBlock(32, 64, stride=2, n_segment=n_segment)
+        self.layer3 = TSMResBlock(64, 128, stride=2, n_segment=n_segment)
+        # No layer4 — ConvGRU attaches directly after layer3
+
+        self.convgru = ConvGRU(input_channels=128, hidden_channels=128)
+
+        self.fc = nn.Linear(128, num_classes)
+
+    def forward(self, x):
+        """
+        Args:
+            x: (B, T, 3, H, W) video frame sequence.
+        Returns:
+            (B, num_classes) classification logits.
+        """
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
+        x = self.conv1(x)                       # (B*T, 32, H/2, W/2)
+        x = self.layer1(x)                      # (B*T, 32, H/2, W/2)
+        x = self.layer2(x)                      # (B*T, 64, H/4, W/4)
+        x = self.layer3(x)                      # (B*T, 128, H/8, W/8)
+
         # 降低空间分辨率, 减少 ConvGRU 计算量和显存占用
-        x = F.adaptive_avg_pool2d(x, (7, 7))    # (B*T, 128, 7, 7)
+        x = F.adaptive_avg_pool2d(x, (self.pool_size, self.pool_size))
+                                                # (B*T, 128, pool_size, pool_size)
 
         _, c_out, h_out, w_out = x.size()
-        x = x.view(b, t, c_out, h_out, w_out)   # (B, T, 128, 7, 7)
-        x = self.convgru(x)                     # (B, 128, 7, 7)
+        x = x.view(b, t, c_out, h_out, w_out)   # (B, T, 128, pool_size, pool_size)
+        x = self.convgru(x)                     # (B, 128, pool_size, pool_size)
 
         x = F.adaptive_avg_pool2d(x, (1, 1))    # (B, 128, 1, 1)
         x = x.view(b, -1)                       # (B, 128)
@@ -307,7 +376,8 @@ class UltraLightConvGRUModel(nn.Module):
 
 
 # --------------------------
-# MARK: ResNet18-channel TSM Models (with pretrained weights)
+# MARK: Pre-TSM
+# ResNet18-channel TSM Models (with pretrained weights)
 # --------------------------
 
 class LightweightTSMResNetModel(nn.Module):
@@ -379,6 +449,10 @@ class LightweightTSMResNetModel(nn.Module):
         out = self.fc(x)                        # (B, num_classes)
         return out
 
+# --------------------------
+# MARK: Pre-UltraLight-
+# ResNet18-channel TSM Models (with pretrained weights)
+# --------------------------
 
 class UltraLightConvGRUResNetModel(nn.Module):
     """Ultra-lightweight ConvGRU model with ResNet18 channel dimensions.
