@@ -43,8 +43,8 @@ CONFIG_Linux = {
     "img_size": (100, 176),
     "num_classes": 27,
     "hidden_dim": 256,
-    "num_epochs": 100,
-    "learning_rate": 4e-3,
+    "num_epochs": 30,
+    "learning_rate": 1e-3,
     "device": "cuda"
 }
 

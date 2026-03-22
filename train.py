@@ -21,11 +21,13 @@ def parse_args():
     parser.add_argument("--checkpoint_dir", type=str, default=config["checkpoint_dir"], help="模型和预测结果保存的目录")
     parser.add_argument("--batch_size", type=int, default=config["batch_size"])
     parser.add_argument("--epochs", type=int, default=config["num_epochs"])
+    parser.add_argument("--early_stopping", type=bool, default=True, help="是否启用提前停止策略")
     return parser.parse_args()
 
 def train_model():
     args = parse_args()
     config = get_config()
+    estop = args.early_stopping
     
     # 更新配置
     config["data_dir"] = args.data_dir
@@ -171,7 +173,7 @@ def train_model():
         
         # 提前停止策略 (Early Stopping)
         # 在 epoch 超过总 epoch 数的 70% 后生效
-        if epoch + 1 >= int(0.7 * config["num_epochs"]):
+        if (epoch + 1 >= int(0.7 * config["num_epochs"])) and estop:
             if val_epoch_acc < best_val_acc:
                 print(f"⚠️ 触发提前停止：当前验证集准确率({val_epoch_acc:.2f}%) 低于历史最佳({best_val_acc:.2f}%)")
                 break
