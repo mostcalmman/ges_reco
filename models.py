@@ -240,7 +240,7 @@ class LightweightTSMModel(nn.Module):
 
 
 # --------------------------
-# MARK: UltraLight + GRU
+# MARK: UltraLightGRU
 # TSM + Standard GRU (replaces ConvGRU)
 # --------------------------
 
@@ -277,13 +277,9 @@ class UltraLightGRUModel(nn.Module):
         self.layer3 = TSMResBlock(64, 128, stride=2, n_segment=n_segment)
         # No layer4 — GRU attaches directly after layer3
 
-        # Spatial pooling before GRU to reduce feature dimension
-        self.spatial_pool = nn.AdaptiveAvgPool2d((4, 4))  # 4x4 spatial reduction
-
-        # GRU input size: 128 channels * 4 * 4 spatial = 2048
-        self.gru_input_size = 128 * 4 * 4
+        # GRU input: AdaptiveAvgPool2d(1,1) collapses spatial dims to 128-d vector per frame
         self.gru = nn.GRU(
-            input_size=self.gru_input_size,
+            input_size=128,
             hidden_size=hidden_dim,
             num_layers=1,
             batch_first=True
@@ -306,24 +302,16 @@ class UltraLightGRUModel(nn.Module):
         x = self.layer2(x)                      # (B*T, 64, H/4, W/4)
         x = self.layer3(x)                      # (B*T, 128, H/8, W/8)
 
-        # Spatial pooling to reduce dimension before GRU
-        x = self.spatial_pool(x)                # (B*T, 128, 4, 4)
-
-        # Flatten spatial dimensions for GRU
-        _, c_out, h_out, w_out = x.size()
-        x = x.view(b, t, c_out * h_out * w_out) # (B, T, 128*4*4=2048)
+        x = F.adaptive_avg_pool2d(x, (1, 1))    # (B*T, 128, 1, 1)
+        x = x.view(b, t, -1)                    # (B, T, 128)
 
         # GRU temporal aggregation
-        rnn_out, hidden = self.gru(x)           # rnn_out: (B, T, hidden_dim), hidden: (1, B, hidden_dim)
+        rnn_out, hidden = self.gru(x)           # hidden: (1, B, hidden_dim)
         last_hidden = hidden[-1]                # (B, hidden_dim)
 
         out = self.fc(last_hidden)              # (B, num_classes)
         return out
 
-
-# --------------------------
-# MARK: Pre-TSM
-# ResNet18-channel TSM Models (with pretrained weights)
 # --------------------------
 # MARK: Ultralight
 # TSM + ConGRU
