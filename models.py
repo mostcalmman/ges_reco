@@ -20,7 +20,8 @@ import torchvision.models as models
 from modules import TSMResBlock, ConvGRU
 
 modelList = ['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru',
-             'ultralight_convgru_pooled', 'lightweight_tsm_resnet', 'ultralight_convgru_resnet']
+             'ultralight_convgru_pooled', 'lightweight_tsm_resnet', 'ultralight_convgru_resnet',
+             'ultralight_gru']
 
 
 def _load_resnet18_weights_to_tsm(target_model, pretrained_resnet):
@@ -238,6 +239,91 @@ class LightweightTSMModel(nn.Module):
         return out
 
 
+# --------------------------
+# MARK: UltraLight + GRU
+# TSM + Standard GRU (replaces ConvGRU)
+# --------------------------
+
+class UltraLightGRUModel(nn.Module):
+    """Ultra-lightweight model: 3-layer TSM-ResNet with standard GRU.
+
+    Architecture:
+        Conv1 (3->32, stride=2) -> 3x TSMResBlock [32->64->128]
+        -> SpatialPool -> Flatten -> GRU -> FC
+
+    Similar to UltraLightConvGRUModel but replaces ConvGRU with standard GRU.
+    Spatial features are pooled before the GRU to reduce sequence dimension.
+    Target: < 2.5M parameters.
+
+    Args:
+        num_classes: Number of output classes (default 27 for Jester).
+        n_segment: Number of temporal segments (sampled frames).
+        hidden_dim: GRU hidden state dimension.
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
+        super(UltraLightGRUModel, self).__init__()
+        self.n_segment = n_segment
+        self.hidden_dim = hidden_dim
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.layer1 = TSMResBlock(32, 32, stride=1, n_segment=n_segment)
+        self.layer2 = TSMResBlock(32, 64, stride=2, n_segment=n_segment)
+        self.layer3 = TSMResBlock(64, 128, stride=2, n_segment=n_segment)
+        # No layer4 — GRU attaches directly after layer3
+
+        # Spatial pooling before GRU to reduce feature dimension
+        self.spatial_pool = nn.AdaptiveAvgPool2d((4, 4))  # 4x4 spatial reduction
+
+        # GRU input size: 128 channels * 4 * 4 spatial = 2048
+        self.gru_input_size = 128 * 4 * 4
+        self.gru = nn.GRU(
+            input_size=self.gru_input_size,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x):
+        """
+        Args:
+            x: (B, T, 3, H, W) video frame sequence.
+        Returns:
+            (B, num_classes) classification logits.
+        """
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
+        x = self.conv1(x)                       # (B*T, 32, H/2, W/2)
+        x = self.layer1(x)                      # (B*T, 32, H/2, W/2)
+        x = self.layer2(x)                      # (B*T, 64, H/4, W/4)
+        x = self.layer3(x)                      # (B*T, 128, H/8, W/8)
+
+        # Spatial pooling to reduce dimension before GRU
+        x = self.spatial_pool(x)                # (B*T, 128, 4, 4)
+
+        # Flatten spatial dimensions for GRU
+        _, c_out, h_out, w_out = x.size()
+        x = x.view(b, t, c_out * h_out * w_out) # (B, T, 128*4*4=2048)
+
+        # GRU temporal aggregation
+        rnn_out, hidden = self.gru(x)           # rnn_out: (B, T, hidden_dim), hidden: (1, B, hidden_dim)
+        last_hidden = hidden[-1]                # (B, hidden_dim)
+
+        out = self.fc(last_hidden)              # (B, num_classes)
+        return out
+
+
+# --------------------------
+# MARK: Pre-TSM
+# ResNet18-channel TSM Models (with pretrained weights)
 # --------------------------
 # MARK: Ultralight
 # TSM + ConGRU

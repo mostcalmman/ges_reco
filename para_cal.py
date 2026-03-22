@@ -2,7 +2,7 @@ import os
 import argparse
 import torch
 
-from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel
+from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightGRUModel
 from dataset import CONFIG, CONFIG_Linux, IS_WINDOWS, IS_LINUX, get_config
 
 def parse_args():
@@ -53,6 +53,12 @@ def main():
             num_classes=config.get("num_classes", 27),
             n_segment=config.get("num_frames", 37),
             pretrained=True
+        )
+    elif args.model_type == 'ultralight_gru':
+        model = UltraLightGRUModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
+            hidden_dim=config.get("hidden_dim", 128)
         )
     else:
         print(f"❌ 未知的模型类型: {args.model_type}")

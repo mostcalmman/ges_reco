@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 
 from dataset import CONFIG, CONFIG_Linux, IS_WINDOWS, IS_LINUX, get_config, JesterDataset, train_transform, val_transform
-from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightConvGRUPooledModel
+from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightConvGRUPooledModel, UltraLightGRUModel
 
 # --------------------------
 # 训练和推理流程
@@ -100,6 +100,12 @@ def train_model():
             num_classes=config["num_classes"],
             n_segment=config["num_frames"],
             pretrained=True
+        ).to(config["device"])
+    elif args.model_type == 'ultralight_gru':
+        model = UltraLightGRUModel(
+            num_classes=config["num_classes"],
+            n_segment=config["num_frames"],
+            hidden_dim=config["hidden_dim"]
         ).to(config["device"])
     else:
         model = ResNetVideoModel(

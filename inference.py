@@ -10,11 +10,11 @@ from torch.utils.data import DataLoader
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from dataset import CONFIG, CONFIG_Linux, IS_WINDOWS, IS_LINUX, get_config, JesterDataset, val_transform
-from models import ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel
+from models import ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightGRUModel
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Gesture Recognition Inference")
-    parser.add_argument("--model_type", type=str, choices=['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru', 'lightweight_tsm_resnet', 'ultralight_convgru_resnet'], default='resnet', help="使用的模型结构")
+    parser.add_argument("--model_type", type=str, choices=['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru', 'lightweight_tsm_resnet', 'ultralight_convgru_resnet', 'ultralight_gru'], default='resnet', help="使用的模型结构")
     parser.add_argument("--csv_path", type=str, default="", help="要推理的 CSV 文件路径(数据集推理)")
     parser.add_argument("--root_dir", type=str, default="dataset/Test", help="要推理的视频图片根目录")
     parser.add_argument("--video_path", type=str, default="", help="单个视频文件夹路径(单视频推理)")
@@ -173,6 +173,12 @@ def run_inference():
             num_classes=config.get("num_classes", 27),
             n_segment=config.get("num_frames", 37),
             pretrained=False  # 推理时不加载预训练权重
+        )
+    elif args.model_type == 'ultralight_gru':
+        model = UltraLightGRUModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
+            hidden_dim=config.get("hidden_dim", 128)
         )
     else:
         model = ResNetVideoModel(num_classes=config["num_classes"])
