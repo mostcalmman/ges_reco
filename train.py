@@ -22,8 +22,8 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=config["batch_size"])
     parser.add_argument("--epochs", type=int, default=config["num_epochs"])
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training from")
-    parser.add_argument("--save_every", type=int, default=0, help="Save checkpoint every N epochs (0 to disable)")
-    parser.add_argument("--early_stopping", type=bool, default=True, help="是否启用提前停止策略")
+    parser.add_argument("--save_every", type=int, default=10, help="Save checkpoint every N epochs (0 to disable)")
+    parser.add_argument("--early_stopping", type=bool, default=False, help="是否启用提前停止策略")
     return parser.parse_args()
 
 def train_model():
