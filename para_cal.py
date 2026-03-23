@@ -2,7 +2,7 @@ import os
 import argparse
 import torch
 
-from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightGRUModel
+from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightGRUModel, UltraLightMEGRUModel, UltraLightMELiteGRUModel
 from utils import get_config, get_platform_name
 
 # 尝试导入 thop，如果未安装则给出提示
@@ -67,6 +67,18 @@ def create_model(model_type, config):
         )
     elif model_type == 'ultralight_gru':
         model = UltraLightGRUModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
+            hidden_dim=config.get("hidden_dim", 128)
+        )
+    elif model_type == 'ultralight_me_gru':
+        model = UltraLightMEGRUModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
+            hidden_dim=config.get("hidden_dim", 128)
+        )
+    elif model_type == 'ultralight_me_lite_gru':
+        model = UltraLightMELiteGRUModel(
             num_classes=config.get("num_classes", 27),
             n_segment=config.get("num_frames", 37),
             hidden_dim=config.get("hidden_dim", 128)

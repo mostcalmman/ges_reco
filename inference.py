@@ -11,13 +11,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from utils import get_config, get_platform_name
 from dataset import JesterDataset, get_val_transform
-from models import ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightGRUModel
+from models import ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightGRUModel, UltraLightMEGRUModel, UltraLightMELiteGRUModel
 
 
 def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description="Gesture Recognition Inference")
-    parser.add_argument("--model_type", type=str, choices=['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru', 'lightweight_tsm_resnet', 'ultralight_convgru_resnet', 'ultralight_gru'], default='resnet', help="使用的模型结构")
+    parser.add_argument("--model_type", type=str, choices=['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru', 'lightweight_tsm_resnet', 'ultralight_convgru_resnet', 'ultralight_gru', 'ultralight_me_gru', 'ultralight_me_lite_gru'], default='resnet', help="使用的模型结构")
     parser.add_argument("--csv_path", type=str, default="", help="要推理的 CSV 文件路径(数据集推理)")
     parser.add_argument("--root_dir", type=str, default="dataset/Test", help="要推理的视频图片根目录")
     parser.add_argument("--video_path", type=str, default="", help="单个视频文件夹路径(单视频推理)")
@@ -66,6 +66,18 @@ def load_model(model_type, config, device, model_weight_path):
         )
     elif model_type == 'ultralight_gru':
         model = UltraLightGRUModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
+            hidden_dim=config.get("hidden_dim", 128)
+        )
+    elif model_type == 'ultralight_me_gru':
+        model = UltraLightMEGRUModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
+            hidden_dim=config.get("hidden_dim", 128)
+        )
+    elif model_type == 'ultralight_me_lite_gru':
+        model = UltraLightMELiteGRUModel(
             num_classes=config.get("num_classes", 27),
             n_segment=config.get("num_frames", 37),
             hidden_dim=config.get("hidden_dim", 128)

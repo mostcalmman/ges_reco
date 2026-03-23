@@ -6,3 +6,4 @@ __pycache__/
 temporal-shift-module/
 .sisyphus/
 *.tar
+ActionNet/
