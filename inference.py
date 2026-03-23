@@ -9,10 +9,13 @@ from torch.utils.data import DataLoader
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from dataset import CONFIG, CONFIG_Linux, IS_WINDOWS, IS_LINUX, get_config, JesterDataset, val_transform
+from utils import get_config, get_platform_name
+from dataset import JesterDataset, get_val_transform
 from models import ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightGRUModel
 
+
 def parse_args():
+    """解析命令行参数"""
     parser = argparse.ArgumentParser(description="Gesture Recognition Inference")
     parser.add_argument("--model_type", type=str, choices=['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru', 'lightweight_tsm_resnet', 'ultralight_convgru_resnet', 'ultralight_gru'], default='resnet', help="使用的模型结构")
     parser.add_argument("--csv_path", type=str, default="", help="要推理的 CSV 文件路径(数据集推理)")
@@ -20,23 +23,86 @@ def parse_args():
     parser.add_argument("--video_path", type=str, default="", help="单个视频文件夹路径(单视频推理)")
     parser.add_argument("--model_weight", type=str, required=True, help="模型权重文件路径")
     parser.add_argument("--output_csv", type=str, default="checkpoint/inference_results.csv", help="推理结果输出的 CSV 文件路径")
-    parser.add_argument("--batch_size", type=int, default=16, help="推理时的 Batch Size")
+    parser.add_argument("--batch_size", type=int, default=None, help="推理时的 Batch Size")
     return parser.parse_args()
 
-def infer_single_video(args, model, device):
+
+def load_model(model_type, config, device, model_weight_path):
+    """
+    加载指定类型的模型
+    
+    Args:
+        model_type: 模型类型
+        config: 配置字典
+        device: 计算设备
+        model_weight_path: 模型权重文件路径
+        
+    Returns:
+        model: 加载好权重的模型实例
+    """
+    if model_type == 'resnet_gru':
+        model = ResNetGRUVideoModel(num_classes=config["num_classes"], hidden_dim=config["hidden_dim"])
+    elif model_type == 'lightweight_tsm':
+        model = LightweightTSMModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37)
+        )
+    elif model_type == 'ultralight_convgru':
+        model = UltraLightConvGRUModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37)
+        )
+    elif model_type == 'lightweight_tsm_resnet':
+        model = LightweightTSMResNetModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
+            pretrained=False  # 推理时不加载预训练权重
+        )
+    elif model_type == 'ultralight_convgru_resnet':
+        model = UltraLightConvGRUResNetModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
+            pretrained=False  # 推理时不加载预训练权重
+        )
+    elif model_type == 'ultralight_gru':
+        model = UltraLightGRUModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
+            hidden_dim=config.get("hidden_dim", 128)
+        )
+    else:
+        model = ResNetVideoModel(num_classes=config["num_classes"])
+    
+    model.load_state_dict(torch.load(model_weight_path, map_location=device))
+    model.to(device)
+    model.eval()
+    return model
+
+
+def infer_single_video(args, model, device, config):
+    """对单个视频进行推理"""
     print(f"正在对单个视频进行推理: {args.video_path}")
     
     frames = []
     if os.path.exists(args.video_path):
         frame_files = sorted([f for f in os.listdir(args.video_path) if f.endswith('.jpg')])
         total_frames = len(frame_files)
+        num_frames = config["num_frames"]
+        img_size = tuple(config.get("img_size", (100, 176)))
         
-        if total_frames <= CONFIG["num_frames"]:
+        if total_frames <= num_frames:
             indices = np.linspace(1, total_frames, total_frames, dtype=int)
-            padding = np.ones(CONFIG["num_frames"] - total_frames, dtype=int) * total_frames
+            padding = np.ones(num_frames - total_frames, dtype=int) * total_frames
             indices = np.concatenate((indices, padding))
         else:
-            indices = np.linspace(1, total_frames, CONFIG["num_frames"], dtype=int)
+            indices = np.linspace(1, total_frames, num_frames, dtype=int)
+        
+        # 创建 transform
+        val_transform = get_val_transform(
+            img_size=img_size,
+            normalize_mean=config.get("normalize_mean"),
+            normalize_std=config.get("normalize_std")
+        )
             
         for i in indices:
             frame_name = f"{i:05d}.jpg"
@@ -44,7 +110,7 @@ def infer_single_video(args, model, device):
             try:
                 img = Image.open(img_path).convert('RGB')
             except FileNotFoundError:
-                img = Image.new('RGB', (CONFIG["img_size"][1], CONFIG["img_size"][0]), color=0)
+                img = Image.new('RGB', (img_size[1], img_size[0]), color=0)
             img = val_transform(img)
             frames.append(img)
             
@@ -66,12 +132,23 @@ def infer_single_video(args, model, device):
     results_df.to_csv(args.output_csv, index=False)
     print(f"✅ 推理结果已保存至: {args.output_csv}")
 
+
 def infer_dataset(args, model, device, config):
+    """对整个数据集进行推理"""
     if not os.path.exists(args.csv_path):
         print(f"❌ 找不到 CSV 文件: {args.csv_path}")
         return
         
     print(f"读取数据集: {args.csv_path}")
+    
+    # 创建 transform
+    img_size = tuple(config.get("img_size", (100, 176)))
+    val_transform = get_val_transform(
+        img_size=img_size,
+        normalize_mean=config.get("normalize_mean"),
+        normalize_std=config.get("normalize_std")
+    )
+    
     test_dataset = JesterDataset(
         csv_file=args.csv_path,
         root_dir=args.root_dir,
@@ -79,8 +156,16 @@ def infer_dataset(args, model, device, config):
         transform=val_transform,
         is_test=False 
     )
-    # 使用config中的num_workers，Windows上自动为0
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=config["num_workers"], pin_memory=config["pin_memory"])
+    
+    # 使用 config 中的 batch_size（如果未指定）
+    batch_size = args.batch_size if args.batch_size is not None else config["batch_size"]
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=batch_size, 
+        shuffle=False, 
+        num_workers=config["num_workers"], 
+        pin_memory=config["pin_memory"]
+    )
 
     predictions = []
     video_ids = []
@@ -133,15 +218,17 @@ def infer_dataset(args, model, device, config):
     results_df.to_csv(args.output_csv, index=False)
     print(f"✅ 推理完成！预测结果已保存至: {args.output_csv}")
 
+
 def run_inference():
+    """主推理流程"""
     args = parse_args()
     
-    # 根据平台获取相应配置
+    # 加载配置
     config = get_config()
     device = config["device"]
     
     # 打印平台信息
-    platform_name = "Windows" if IS_WINDOWS else ("Linux" if IS_LINUX else "Unknown")
+    platform_name = get_platform_name()
     print(f"Platform: {platform_name}")
     print(f"正在加载模型并准备推理...")
     print(f"使用设备: {device}")
@@ -150,49 +237,17 @@ def run_inference():
         print(f"❌ 找不到模型权重文件: {args.model_weight}")
         return
 
-    if args.model_type == 'resnet_gru':
-        model = ResNetGRUVideoModel(num_classes=config["num_classes"], hidden_dim=config["hidden_dim"])
-    elif args.model_type == 'lightweight_tsm':
-        model = LightweightTSMModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37)
-        )
-    elif args.model_type == 'ultralight_convgru':
-        model = UltraLightConvGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37)
-        )
-    elif args.model_type == 'lightweight_tsm_resnet':
-        model = LightweightTSMResNetModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            pretrained=False  # 推理时不加载预训练权重
-        )
-    elif args.model_type == 'ultralight_convgru_resnet':
-        model = UltraLightConvGRUResNetModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            pretrained=False  # 推理时不加载预训练权重
-        )
-    elif args.model_type == 'ultralight_gru':
-        model = UltraLightGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    else:
-        model = ResNetVideoModel(num_classes=config["num_classes"])
-        
-    model.load_state_dict(torch.load(args.model_weight, map_location=device))
-    model.to(device)
-    model.eval()
+    # 加载模型
+    model = load_model(args.model_type, config, device, args.model_weight)
 
+    # 执行推理
     if args.video_path:
-        infer_single_video(args, model, device)
+        infer_single_video(args, model, device, config)
     elif args.csv_path:
         infer_dataset(args, model, device, config)
     else:
         print("❌ 请提供 --csv_path (用于数据集) 或 --video_path (用于单视频)")
+
 
 if __name__ == "__main__":
     run_inference()

@@ -1,15 +1,6 @@
 """
 Video gesture recognition model architectures.
-
 All models accept input shape (B, T, 3, H, W) and output (B, num_classes).
-
-Model variants:
-    ResNetVideoModel             — ResNet18 backbone, temporal mean pooling
-    ResNetGRUVideoModel          — ResNet18 backbone + GRU temporal aggregation
-    LightweightTSMModel          — Shallow TSM-ResNet, no ConvGRU (< 3M params)
-    UltraLightConvGRUModel       — 3-layer TSM-ResNet + ConvGRU (< 2.5M params)
-    LightweightTSMResNetModel    — ResNet18-channel TSM with pretrained weights
-    UltraLightConvGRUResNetModel — ResNet18-channel ConvGRU with pretrained weights
 """
 
 import torch
@@ -130,7 +121,7 @@ class ResNetVideoModel(nn.Module):
 
 
 # --------------------------
-# MARK: +GRU
+# MARK: ResnetGRU
 # --------------------------
 
 class ResNetGRUVideoModel(nn.Module):
@@ -178,7 +169,7 @@ class ResNetGRUVideoModel(nn.Module):
 
 
 # --------------------------
-# MARK: Light TSM
+# MARK: LightTSM
 # --------------------------
 
 class LightweightTSMModel(nn.Module):
@@ -241,7 +232,7 @@ class LightweightTSMModel(nn.Module):
 
 # --------------------------
 # MARK: UltraLightGRU
-# TSM + Standard GRU (replaces ConvGRU)
+# TSM + Standard GRU, current Best
 # --------------------------
 
 class UltraLightGRUModel(nn.Module):
@@ -313,8 +304,8 @@ class UltraLightGRUModel(nn.Module):
         return out
 
 # --------------------------
-# MARK: Ultralight
-# TSM + ConGRU
+# MARK: Ultralight_ConvGRU
+# TSM + ConvGRU
 # --------------------------
 
 class UltraLightConvGRUModel(nn.Module):
@@ -379,8 +370,8 @@ class UltraLightConvGRUModel(nn.Module):
         return out
 
 # --------------------------
-# MARK: UltraLight-
-# TSM + ConGRU, convGRU前缩特征图
+# MARK: Ultralight_ConvGRU_Pooled
+# TSM + ConvGRU, convGRU前缩特征图
 # --------------------------
 
 class UltraLightConvGRUPooledModel(nn.Module):
@@ -524,7 +515,7 @@ class LightweightTSMResNetModel(nn.Module):
         return out
 
 # --------------------------
-# MARK: Pre-UltraLight-
+# MARK: Pre-UltraLight_ConvGRU_Pooled
 # ResNet18-channel TSM Models (with pretrained weights)
 # --------------------------
 

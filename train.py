@@ -1,5 +1,4 @@
 import os
-import platform
 import argparse
 import pandas as pd
 import torch
@@ -7,13 +6,17 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 
-from dataset import CONFIG, CONFIG_Linux, IS_WINDOWS, IS_LINUX, get_config, JesterDataset, train_transform, val_transform
+from utils import get_config, get_platform_name, is_windows, is_linux
+from dataset import JesterDataset, get_train_transform, get_val_transform
 from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightConvGRUPooledModel, UltraLightGRUModel
 
-# --------------------------
-# 训练和推理流程
-# --------------------------
+
+# ============================================================
+# 配置与初始化函数
+# ============================================================
+
 def parse_args():
+    """解析命令行参数"""
     config = get_config()
     parser = argparse.ArgumentParser(description="Gesture Recognition Training")
     parser.add_argument("--model_type", type=str, choices=modelList, default='resnet', help="使用的模型结构")
@@ -27,10 +30,16 @@ def parse_args():
     parser.add_argument("--early_stopping", type=bool, default=False, help="是否启用提前停止策略")
     return parser.parse_args()
 
-def train_model():
+
+def setup_training():
+    """
+    初始化训练环境：解析参数、更新配置、创建目录、打印信息
+    
+    Returns:
+        tuple: (args, config)
+    """
     args = parse_args()
     config = get_config()
-    estop = args.early_stopping
     
     # 更新配置
     config["data_dir"] = args.data_dir
@@ -40,10 +49,18 @@ def train_model():
     if args.learning_rate is not None:
         config["learning_rate"] = args.learning_rate
     
+    # 创建检查点目录
     os.makedirs(config["checkpoint_dir"], exist_ok=True)
     
-    # 打印平台信息
-    platform_name = "Windows" if IS_WINDOWS else ("Linux" if IS_LINUX else platform.system())
+    # 打印训练配置信息
+    print_training_info(args, config)
+    
+    return args, config
+
+
+def print_training_info(args, config):
+    """打印训练配置信息"""
+    platform_name = get_platform_name()
     print(f"Platform: {platform_name}")
     print(f"Using device: {config['device']}")
     print(f"Batchsize: {config['batch_size']}")
@@ -51,12 +68,33 @@ def train_model():
     print(f"Model Type: {args.model_type}")
     print(f"Data Directory: {config['data_dir']}")
     print(f"Checkpoint Directory: {config['checkpoint_dir']}")
-    
-    train_csv = os.path.join(config["data_dir"], "Train.csv")
 
-    # 准备 Dataloader
+
+# ============================================================
+# 数据加载函数
+# ============================================================
+
+def create_dataloaders(config):
+    """
+    创建训练和验证数据加载器
+    
+    Args:
+        config: 配置字典
+        
+    Returns:
+        tuple: (train_loader, val_loader)
+    """
+    # 根据配置创建 transforms
+    img_size = tuple(config.get("img_size", (100, 176)))
+    normalize_mean = config.get("normalize_mean")
+    normalize_std = config.get("normalize_std")
+    
+    train_transform = get_train_transform(img_size, normalize_mean, normalize_std)
+    val_transform = get_val_transform(img_size, normalize_mean, normalize_std)
+    
+    # 创建数据集
     train_dataset = JesterDataset(
-        csv_file=train_csv,
+        csv_file=os.path.join(config["data_dir"], "Train.csv"),
         root_dir=os.path.join(config["data_dir"], "Train"),
         num_frames=config["num_frames"],
         transform=train_transform
@@ -69,75 +107,124 @@ def train_model():
         transform=val_transform
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=True, num_workers=config["num_workers"], pin_memory=config["pin_memory"], prefetch_factor=config["prefetch_factor"])
-    val_loader = DataLoader(val_dataset, batch_size=config["batch_size"], shuffle=False, num_workers=config["num_workers"], pin_memory=config["pin_memory"], prefetch_factor=config["prefetch_factor"])
+    # 创建数据加载器
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=config["batch_size"], 
+        shuffle=True, 
+        num_workers=config["num_workers"], 
+        pin_memory=config["pin_memory"], 
+        prefetch_factor=config["prefetch_factor"]
+    )
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=config["batch_size"], 
+        shuffle=False, 
+        num_workers=config["num_workers"], 
+        pin_memory=config["pin_memory"], 
+        prefetch_factor=config["prefetch_factor"]
+    )
+    
+    return train_loader, val_loader
 
-    # 根据参数选择并初始化模型
-    if args.model_type == 'resnet_gru':
+
+# ============================================================
+# 模型相关函数
+# ============================================================
+
+def build_model(model_type, config):
+    """
+    根据模型类型创建模型实例
+    
+    Args:
+        model_type: 模型类型字符串
+        config: 配置字典
+        
+    Returns:
+        nn.Module: 初始化后的模型
+    """
+    model_kwargs = {
+        'num_classes': config["num_classes"]
+    }
+    
+    if model_type == 'resnet_gru':
         model = ResNetGRUVideoModel(
-            num_classes=config["num_classes"], 
+            **model_kwargs, 
             hidden_dim=config["hidden_dim"],
             freeze_backbone=True
-        ).to(config["device"])
-    elif args.model_type == 'lightweight_tsm':
+        )
+    elif model_type == 'lightweight_tsm':
         model = LightweightTSMModel(
-            num_classes=config["num_classes"],
+            **model_kwargs,
             n_segment=config["num_frames"]
-        ).to(config["device"])
-    elif args.model_type == 'ultralight_convgru':
+        )
+    elif model_type == 'ultralight_convgru':
         model = UltraLightConvGRUModel(
-            num_classes=config["num_classes"],
+            **model_kwargs,
             n_segment=config["num_frames"]
-        ).to(config["device"])
-    elif args.model_type == 'ultralight_convgru_pooled':
+        )
+    elif model_type == 'ultralight_convgru_pooled':
         model = UltraLightConvGRUPooledModel(
-            num_classes=config["num_classes"],
+            **model_kwargs,
             n_segment=config["num_frames"]
-        ).to(config["device"])
-    elif args.model_type == 'lightweight_tsm_resnet':
+        )
+    elif model_type == 'lightweight_tsm_resnet':
         model = LightweightTSMResNetModel(
-            num_classes=config["num_classes"],
+            **model_kwargs,
             n_segment=config["num_frames"],
             pretrained=True
-        ).to(config["device"])
-    elif args.model_type == 'ultralight_convgru_resnet':
+        )
+    elif model_type == 'ultralight_convgru_resnet':
         model = UltraLightConvGRUResNetModel(
-            num_classes=config["num_classes"],
+            **model_kwargs,
             n_segment=config["num_frames"],
             pretrained=True
-        ).to(config["device"])
-    elif args.model_type == 'ultralight_gru':
+        )
+    elif model_type == 'ultralight_gru':
         model = UltraLightGRUModel(
-            num_classes=config["num_classes"],
+            **model_kwargs,
             n_segment=config["num_frames"],
             hidden_dim=config["hidden_dim"]
-        ).to(config["device"])
-    else:
+        )
+    else:  # resnet (default)
         model = ResNetVideoModel(
-            num_classes=config["num_classes"],
+            **model_kwargs,
             freeze_backbone=True
-        ).to(config["device"])
+        )
+    
+    return model.to(config["device"])
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=config["learning_rate"])
 
-    # 用于记录历史数据
+def load_checkpoint_if_needed(args, model, optimizer, device):
+    """
+    如果需要，从检查点恢复训练状态
+    
+    Args:
+        args: 命令行参数
+        model: 模型实例
+        optimizer: 优化器
+        device: 计算设备
+        
+    Returns:
+        tuple: (train_losses, train_accs, val_losses, val_accs, best_val_acc, start_epoch)
+    """
     train_losses, train_accs = [], []
     val_losses, val_accs = [], []
     best_val_acc = 0.0
     start_epoch = 0
-
-    # 加载检查点（如果指定了 --resume）
+    
     if args.resume is not None:
         if os.path.exists(args.resume):
             print(f"正在从检查点恢复: {args.resume}")
-            checkpoint = torch.load(args.resume, map_location=config["device"])
+            checkpoint = torch.load(args.resume, map_location=device)
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            
             if args.learning_rate is not None:
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = args.learning_rate
                 print(f"✓ resume 后学习率已覆盖为: {args.learning_rate}")
+            
             train_losses = checkpoint.get('train_losses', [])
             train_accs = checkpoint.get('train_accs', [])
             val_losses = checkpoint.get('val_losses', [])
@@ -147,242 +234,186 @@ def train_model():
             print(f"✓ 已从检查点恢复训练: 起始 epoch {start_epoch}")
         else:
             print(f"⚠️ 检查点文件不存在: {args.resume}，从头开始训练")
+    
+    return train_losses, train_accs, val_losses, val_accs, best_val_acc, start_epoch
 
-    print(f"\n--- 开始训练 ({args.model_type}) ---")
-    # 训练循环
-    for epoch in range(start_epoch, config["num_epochs"]):
-        model.train()
-        train_loss = 0.0
-        train_correct = 0
-        train_total = 0
+
+# ============================================================
+# 训练与验证函数
+# ============================================================
+
+def train_one_epoch(model, train_loader, criterion, optimizer, device, epoch, num_epochs):
+    """
+    执行一个训练 epoch
+    
+    Returns:
+        tuple: (avg_loss, accuracy)
+    """
+    model.train()
+    train_loss = 0.0
+    train_correct = 0
+    train_total = 0
+    
+    for i, (inputs, labels, _) in enumerate(train_loader):
+        inputs, labels = inputs.to(device), labels.to(device)
         
-        for i, (inputs, labels, _) in enumerate(train_loader):
-            inputs, labels = inputs.to(config["device"]), labels.to(config["device"])
-            
-            optimizer.zero_grad()
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        
+        train_loss += loss.item()
+        _, predicted = outputs.max(1)
+        train_total += labels.size(0)
+        train_correct += predicted.eq(labels).sum().item()
+        
+        # 每 10 个 batch 输出一次训练进度
+        if (i + 1) % 10 == 0 or (i + 1) == len(train_loader):
+            print(f"Epoch [{epoch+1}/{num_epochs}], "
+                  f"Step [{i+1}/{len(train_loader)}], "
+                  f"Loss: {loss.item():.4f}, "
+                  f"Acc: {100. * train_correct / train_total:.2f}%")
+    
+    avg_loss = train_loss / len(train_loader)
+    accuracy = 100. * train_correct / train_total
+    return avg_loss, accuracy
+
+
+def validate(model, val_loader, criterion, device):
+    """
+    在验证集上评估模型
+    
+    Returns:
+        tuple: (avg_loss, accuracy)
+    """
+    model.eval()
+    val_loss = 0.0
+    val_correct = 0
+    val_total = 0
+    
+    with torch.no_grad():
+        for inputs, labels, _ in val_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
             outputs = model(inputs)
             loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
             
-            train_loss += loss.item()
+            val_loss += loss.item()
             _, predicted = outputs.max(1)
-            train_total += labels.size(0)
-            train_correct += predicted.eq(labels).sum().item()
-            
-            # 每 10 个 batch 输出一次训练进度
-            if (i + 1) % 10 == 0 or (i + 1) == len(train_loader):
-                print(f"Epoch [{epoch+1}/{config['num_epochs']}], "
-                      f"Step [{i+1}/{len(train_loader)}], "
-                      f"Loss: {loss.item():.4f}, "
-                      f"Acc: {100. * train_correct / train_total:.2f}%")
-            
-        train_epoch_loss = train_loss / len(train_loader)
-        train_epoch_acc = 100. * train_correct / train_total
-
-        # 验证循环
-        model.eval()
-        val_loss = 0.0
-        val_correct = 0
-        val_total = 0
-        with torch.no_grad():
-            for inputs, labels, _ in val_loader:
-                inputs, labels = inputs.to(config["device"]), labels.to(config["device"])
-                outputs = model(inputs)
-                loss = criterion(outputs, labels)
-                
-                val_loss += loss.item()
-                _, predicted = outputs.max(1)
-                val_total += labels.size(0)
-                val_correct += predicted.eq(labels).sum().item()
-                
-        val_epoch_loss = val_loss / len(val_loader)
-        val_epoch_acc = 100. * val_correct / val_total
-                
-        print(f"Epoch [{epoch+1}/{config['num_epochs']}] | "
-              f"Train Loss: {train_epoch_loss:.4f} Acc: {train_epoch_acc:.2f}% | "
-              f"Val Loss: {val_epoch_loss:.4f} Acc: {val_epoch_acc:.2f}%")
-              
-        # 记录数据
-        train_losses.append(train_epoch_loss)
-        train_accs.append(train_epoch_acc)
-        val_losses.append(val_epoch_loss)
-        val_accs.append(val_epoch_acc)
-        
-        # 提前停止策略 (Early Stopping)
-        # 在 epoch 超过总 epoch 数的 70% 后生效
-        if (epoch + 1 >= int(0.7 * config["num_epochs"])) and estop:
-            if val_epoch_acc < best_val_acc:
-                print(f"⚠️ 触发提前停止：当前验证集准确率({val_epoch_acc:.2f}%) 低于历史最佳({best_val_acc:.2f}%)")
-                break
-                
-        # 更新最佳验证集准确率
-        if val_epoch_acc > best_val_acc:
-            best_val_acc = val_epoch_acc
-        
-        # ==========================
-        # 定期保存检查点
-        # ==========================
-        if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
-            print(f"\n--- 保存周期检查点 (Epoch {epoch+1}) ---")
-            
-            # 创建子目录
-            checkpoint_subdir = os.path.join(
-                config["checkpoint_dir"], 
-                "intermediate_checkpoints", 
-                f"epoch_{epoch+1}"
-            )
-            os.makedirs(checkpoint_subdir, exist_ok=True)
-            
-            # 保存模型检查点
-            checkpoint = {
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'train_losses': train_losses,
-                'train_accs': train_accs,
-                'val_losses': val_losses,
-                'val_accs': val_accs,
-                'best_val_acc': best_val_acc,
-                'model_type': args.model_type
-            }
-            checkpoint_path = os.path.join(checkpoint_subdir, f"model_{args.model_type}_epoch_{epoch+1}.pth")
-            torch.save(checkpoint, checkpoint_path)
-            print(f"✓ 检查点已保存: {checkpoint_path}")
-            
-            # 保存训练历史 CSV
-            history_df = pd.DataFrame({
-                "epoch": range(1, len(train_losses) + 1),
-                "train_loss": train_losses,
-                "train_acc": train_accs,
-                "val_loss": val_losses,
-                "val_acc": val_accs
-            })
-            history_csv_path = os.path.join(checkpoint_subdir, f"training_history_epoch_{epoch+1}.csv")
-            history_df.to_csv(history_csv_path, index=False)
-            print(f"✓ 训练历史已保存: {history_csv_path}")
-            
-            # 绘制并保存训练曲线
-            plt.figure(figsize=(12, 5))
-            
-            plt.subplot(1, 2, 1)
-            plt.plot(history_df["epoch"], history_df["train_loss"], label='Train Loss', marker='o')
-            plt.plot(history_df["epoch"], history_df["val_loss"], label='Val Loss', marker='o')
-            plt.xlabel('Epoch')
-            plt.ylabel('Loss')
-            plt.title(f'Loss Curve (Epoch {epoch+1})')
-            plt.grid(True, linestyle='--', alpha=0.6)
-            plt.legend()
-            
-            plt.subplot(1, 2, 2)
-            plt.plot(history_df["epoch"], history_df["train_acc"], label='Train Acc', marker='o')
-            plt.plot(history_df["epoch"], history_df["val_acc"], label='Val Acc', marker='o')
-            plt.xlabel('Epoch')
-            plt.ylabel('Accuracy (%)')
-            plt.title(f'Accuracy Curve (Epoch {epoch+1})')
-            plt.grid(True, linestyle='--', alpha=0.6)
-            plt.legend()
-            
-            plt.tight_layout()
-            plot_path = os.path.join(checkpoint_subdir, f"training_curves_epoch_{epoch+1}.png")
-            plt.savefig(plot_path, dpi=150)
-            plt.close()
-            print(f"✓ 训练曲线已保存: {plot_path}")
-            
-            # 运行测试集评估
-            print(f"--- 评估测试集 (Epoch {epoch+1}) ---")
-            test_csv_path = os.path.join(config["data_dir"], "Test.csv")
-            test_result_loss, test_result_acc = None, None
-            
-            if os.path.exists(test_csv_path):
-                test_dataset = JesterDataset(
-                    csv_file=test_csv_path,
-                    root_dir=os.path.join(config["data_dir"], "Test"),
-                    num_frames=config["num_frames"],
-                    transform=val_transform,
-                    is_test=False
-                )
-                test_loader = DataLoader(
-                    test_dataset, 
-                    batch_size=config["batch_size"], 
-                    shuffle=False, 
-                    num_workers=config["num_workers"]
-                )
-                
-                test_loss = 0.0
-                test_correct = 0
-                test_total = 0
-                has_labels = False
-                
-                model.eval()
-                with torch.no_grad():
-                    for inputs, labels, _ in test_loader:
-                        inputs = inputs.to(config["device"])
-                        labels = labels.to(config["device"])
-                        
-                        outputs = model(inputs)
-                        _, predicted = outputs.max(1)
-                        
-                        if labels[0].item() != -1:
-                            has_labels = True
-                            loss = criterion(outputs, labels)
-                            test_loss += loss.item()
-                            test_total += labels.size(0)
-                            test_correct += predicted.eq(labels).sum().item()
-                
-                if has_labels and test_total > 0:
-                    test_result_loss = test_loss / len(test_loader)
-                    test_result_acc = 100. * test_correct / test_total
-                    print(f"✓ 测试集评估 -> Loss: {test_result_loss:.4f}, Acc: {test_result_acc:.2f}%")
-                else:
-                    print("⚠️ 测试集没有提供真实标签")
-            else:
-                print(f"⚠️ 未找到测试集配置表: {test_csv_path}")
-            
-            # 保存 result.txt 到检查点目录
-            result_txt_path = os.path.join(checkpoint_subdir, "result.txt")
-            total_params = sum(p.numel() for p in model.parameters())
-            
-            with open(result_txt_path, "w", encoding="utf-8") as f:
-                f.write(f"Model Type: {args.model_type}\n")
-                f.write(f"Checkpoint Epoch: {epoch + 1}\n")
-                f.write(f"Total Parameters: {total_params:,}\n")
-                f.write(f"Last Epoch Train Loss: {train_losses[-1]:.4f}\n")
-                f.write(f"Last Epoch Train Acc: {train_accs[-1]:.2f}%\n")
-                f.write(f"Last Epoch Val Loss: {val_losses[-1]:.4f}\n")
-                f.write(f"Last Epoch Val Acc: {val_accs[-1]:.2f}%\n")
-                f.write(f"Best Val Acc So Far: {best_val_acc:.2f}%\n")
-                if test_result_loss is not None:
-                    f.write(f"Test Loss: {test_result_loss:.4f}\n")
-                    f.write(f"Test Acc: {test_result_acc:.2f}%\n")
-                else:
-                    f.write("Test Loss: N/A\n")
-                    f.write("Test Acc: N/A\n")
-            
-            print(f"✓ 结果已保存: {result_txt_path}")
-            print(f"--- 周期检查点保存完成 ---\n")
+            val_total += labels.size(0)
+            val_correct += predicted.eq(labels).sum().item()
     
-    # ==========================
-    # 保存训练记录和绘制图像
-    # ==========================
-    history_df = pd.DataFrame({
-        "epoch": range(1, len(train_losses) + 1),
-        "train_loss": train_losses,
-        "train_acc": train_accs,
-        "val_loss": val_losses,
-        "val_acc": val_accs
-    })
-    history_csv_path = os.path.join(config["checkpoint_dir"], f"training_history_{args.model_type}.csv")
-    history_df.to_csv(history_csv_path, index=False)
-    print(f"📊 训练历史数据已保存至: {history_csv_path}")
+    avg_loss = val_loss / len(val_loader)
+    accuracy = 100. * val_correct / val_total
+    return avg_loss, accuracy
 
-    # 绘制曲线
+
+def log_epoch_results(epoch, num_epochs, train_loss, train_acc, val_loss, val_acc):
+    """打印 epoch 训练结果"""
+    print(f"Epoch [{epoch+1}/{num_epochs}] | "
+          f"Train Loss: {train_loss:.4f} Acc: {train_acc:.2f}% | "
+          f"Val Loss: {val_loss:.4f} Acc: {val_acc:.2f}%")
+
+
+def should_early_stop(epoch, num_epochs, val_acc, best_val_acc, early_stopping_enabled):
+    """
+    检查是否触发提前停止
+    
+    在 epoch 超过总 epoch 数的 70% 后生效
+    """
+    if not early_stopping_enabled:
+        return False
+    
+    if epoch + 1 >= int(0.7 * num_epochs):
+        if val_acc < best_val_acc:
+            print(f"⚠️ 触发提前停止：当前验证集准确率({val_acc:.2f}%) 低于历史最佳({best_val_acc:.2f}%)")
+            return True
+    return False
+
+
+# ============================================================
+# 保存与绘图函数
+# ============================================================
+
+def save_intermediate_checkpoint(args, config, model, optimizer, history, epoch, best_val_acc):
+    """
+    保存中间检查点（模型、历史记录、曲线图、测试结果）
+    
+    Args:
+        args: 命令行参数
+        config: 配置字典
+        model: 模型实例
+        optimizer: 优化器
+        history: 训练历史字典
+        epoch: 当前 epoch（0-based）
+        best_val_acc: 最佳验证准确率
+    """
+    print(f"\n--- 保存周期检查点 (Epoch {epoch+1}) ---")
+    
+    # 创建子目录
+    checkpoint_subdir = os.path.join(
+        config["checkpoint_dir"], 
+        "intermediate_checkpoints", 
+        f"epoch_{epoch+1}"
+    )
+    os.makedirs(checkpoint_subdir, exist_ok=True)
+    
+    # 保存模型检查点
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'train_losses': history['train_losses'],
+        'train_accs': history['train_accs'],
+        'val_losses': history['val_losses'],
+        'val_accs': history['val_accs'],
+        'best_val_acc': best_val_acc,
+        'model_type': args.model_type
+    }
+    checkpoint_path = os.path.join(checkpoint_subdir, f"model_{args.model_type}_epoch_{epoch+1}.pth")
+    torch.save(checkpoint, checkpoint_path)
+    print(f"✓ 检查点已保存: {checkpoint_path}")
+    
+    # 保存训练历史 CSV
+    save_history_csv(history, os.path.join(checkpoint_subdir, f"training_history_epoch_{epoch+1}.csv"))
+    
+    # 绘制并保存训练曲线
+    plot_training_curves(history, os.path.join(checkpoint_subdir, f"training_curves_epoch_{epoch+1}.png"))
+    
+    # 运行测试集评估并保存结果
+    test_loss, test_acc = evaluate_test_set(config, model)
+    save_result_txt(
+        args.model_type, model, history, best_val_acc,
+        os.path.join(checkpoint_subdir, "result.txt"),
+        test_loss=test_loss, test_acc=test_acc
+    )
+    
+    print(f"--- 周期检查点保存完成 ---\n")
+
+
+def save_history_csv(history, filepath):
+    """保存训练历史到 CSV"""
+    history_df = pd.DataFrame({
+        "epoch": range(1, len(history['train_losses']) + 1),
+        "train_loss": history['train_losses'],
+        "train_acc": history['train_accs'],
+        "val_loss": history['val_losses'],
+        "val_acc": history['val_accs']
+    })
+    history_df.to_csv(filepath, index=False)
+    print(f"✓ 训练历史已保存: {filepath}")
+
+
+def plot_training_curves(history, filepath):
+    """绘制并保存训练曲线"""
+    epochs = range(1, len(history['train_losses']) + 1)
+    
     plt.figure(figsize=(12, 5))
     
     # Loss 曲线
     plt.subplot(1, 2, 1)
-    plt.plot(history_df["epoch"], history_df["train_loss"], label='Train Loss', marker='o')
-    plt.plot(history_df["epoch"], history_df["val_loss"], label='Val Loss', marker='o')
+    plt.plot(epochs, history['train_losses'], label='Train Loss', marker='o')
+    plt.plot(epochs, history['val_losses'], label='Val Loss', marker='o')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.title('Loss Curve')
@@ -391,8 +422,8 @@ def train_model():
     
     # Accuracy 曲线
     plt.subplot(1, 2, 2)
-    plt.plot(history_df["epoch"], history_df["train_acc"], label='Train Acc', marker='o')
-    plt.plot(history_df["epoch"], history_df["val_acc"], label='Val Acc', marker='o')
+    plt.plot(epochs, history['train_accs'], label='Train Acc', marker='o')
+    plt.plot(epochs, history['val_accs'], label='Val Acc', marker='o')
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy (%)')
     plt.title('Accuracy Curve')
@@ -400,86 +431,199 @@ def train_model():
     plt.legend()
     
     plt.tight_layout()
-    plot_path = os.path.join(config["checkpoint_dir"], f"training_curves_{args.model_type}.png")
-    plt.savefig(plot_path, dpi=300)
+    plt.savefig(filepath, dpi=150)
     plt.close()
-    print(f"📈 训练曲线图像已保存至: {plot_path}")
+    print(f"✓ 训练曲线已保存: {filepath}")
 
-    # 保存模型
-    model_save_name = f"model_{args.model_type}.pth"
-    model_save_path = os.path.join(config["checkpoint_dir"], model_save_name)
-    torch.save(model.state_dict(), model_save_path)
-    print(f"Training finished! Model saved to {model_save_path}")
-    
-    # ==========================
-    # 测试集一次性验证 (可选)
-    # ==========================
-    print("\n--- 开始对测试集进行初步评估 ---")
-    test_csv_path = os.path.join(config["data_dir"], "Test.csv")
-    if os.path.exists(test_csv_path):
-        test_dataset = JesterDataset(
-            csv_file=test_csv_path,
-            root_dir=os.path.join(config["data_dir"], "Test"),
-            num_frames=config["num_frames"],
-            transform=val_transform,
-            is_test=False # 设置为 False 以便验证是否有标签
-        )
-        test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False, num_workers=config["num_workers"])
-        
-        test_loss = 0.0
-        test_correct = 0
-        test_total = 0
-        has_labels = False
-        
-        model.eval()
-        with torch.no_grad():
-            for inputs, labels, _ in test_loader:
-                inputs = inputs.to(config["device"])
-                labels = labels.to(config["device"])
-                
-                outputs = model(inputs)
-                _, predicted = outputs.max(1)
-                
-                if labels[0].item() != -1:
-                    has_labels = True
-                    loss = criterion(outputs, labels)
-                    test_loss += loss.item()
-                    test_total += labels.size(0)
-                    test_correct += predicted.eq(labels).sum().item()
-                
-        if has_labels and test_total > 0:
-            final_test_loss = test_loss / len(test_loader)
-            final_test_acc = 100. * test_correct / test_total
-            print(f"🎯 最终测试集评估结果 -> Loss: {final_test_loss:.4f}, Acc: {final_test_acc:.2f}%")
-        else:
-            final_test_loss, final_test_acc = None, None
-            print("⚠️ 测试集没有提供真实标签，不支持自动评估。若需输出预测文件，请使用 inference.py。")
-    else:
-        final_test_loss, final_test_acc = None, None
-        print(f"⚠️ 未找到测试集配置表: {test_csv_path}，跳过此步验证。")
 
-    # ==========================
-    # 生成 result.txt
-    # ==========================
-    result_txt_path = os.path.join(config["checkpoint_dir"], "result.txt")
+def save_result_txt(model_type, model, history, best_val_acc, filepath, test_loss=None, test_acc=None):
+    """保存训练结果到文本文件"""
     total_params = sum(p.numel() for p in model.parameters())
     
-    with open(result_txt_path, "w", encoding="utf-8") as f:
-        f.write(f"Model Type: {args.model_type}\n")
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(f"Model Type: {model_type}\n")
         f.write(f"Total Parameters: {total_params:,}\n")
-        if train_losses:
-            f.write(f"Last Epoch Train Loss: {train_losses[-1]:.4f}\n")
-            f.write(f"Last Epoch Train Acc: {train_accs[-1]:.2f}%\n")
-            f.write(f"Last Epoch Val Loss: {val_losses[-1]:.4f}\n")
-            f.write(f"Last Epoch Val Acc: {val_accs[-1]:.2f}%\n")
-        if final_test_loss is not None:
-            f.write(f"Final Test Loss: {final_test_loss:.4f}\n")
-            f.write(f"Final Test Acc: {final_test_acc:.2f}%\n")
+        
+        if history['train_losses']:
+            f.write(f"Last Epoch Train Loss: {history['train_losses'][-1]:.4f}\n")
+            f.write(f"Last Epoch Train Acc: {history['train_accs'][-1]:.2f}%\n")
+            f.write(f"Last Epoch Val Loss: {history['val_losses'][-1]:.4f}\n")
+            f.write(f"Last Epoch Val Acc: {history['val_accs'][-1]:.2f}%\n")
+        
+        f.write(f"Best Val Acc: {best_val_acc:.2f}%\n")
+        
+        if test_loss is not None:
+            f.write(f"Test Loss: {test_loss:.4f}\n")
+            f.write(f"Test Acc: {test_acc:.2f}%\n")
         else:
-            f.write("Final Test Loss: N/A\n")
-            f.write("Final Test Acc: N/A\n")
+            f.write("Test Loss: N/A\n")
+            f.write("Test Acc: N/A\n")
+    
+    print(f"✓ 结果已保存: {filepath}")
+
+
+# ============================================================
+# 测试集评估函数
+# ============================================================
+
+def evaluate_test_set(config, model):
+    """
+    在测试集上评估模型
+    
+    Returns:
+        tuple: (test_loss, test_acc) 如果测试集没有标签则返回 (None, None)
+    """
+    test_csv_path = os.path.join(config["data_dir"], "Test.csv")
+    
+    if not os.path.exists(test_csv_path):
+        print(f"⚠️ 未找到测试集配置表: {test_csv_path}")
+        return None, None
+    
+    # 创建测试集 transform
+    img_size = tuple(config.get("img_size", (100, 176)))
+    normalize_mean = config.get("normalize_mean")
+    normalize_std = config.get("normalize_std")
+    val_transform = get_val_transform(img_size, normalize_mean, normalize_std)
+    
+    test_dataset = JesterDataset(
+        csv_file=test_csv_path,
+        root_dir=os.path.join(config["data_dir"], "Test"),
+        num_frames=config["num_frames"],
+        transform=val_transform,
+        is_test=False  # 设置为 False 以便验证是否有标签
+    )
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=config["batch_size"], 
+        shuffle=False, 
+        num_workers=config["num_workers"]
+    )
+    
+    criterion = nn.CrossEntropyLoss()
+    test_loss = 0.0
+    test_correct = 0
+    test_total = 0
+    has_labels = False
+    
+    model.eval()
+    with torch.no_grad():
+        for inputs, labels, _ in test_loader:
+            inputs = inputs.to(config["device"])
+            labels = labels.to(config["device"])
             
+            outputs = model(inputs)
+            _, predicted = outputs.max(1)
+            
+            if labels[0].item() != -1:
+                has_labels = True
+                loss = criterion(outputs, labels)
+                test_loss += loss.item()
+                test_total += labels.size(0)
+                test_correct += predicted.eq(labels).sum().item()
+    
+    if has_labels and test_total > 0:
+        test_loss = test_loss / len(test_loader)
+        test_acc = 100. * test_correct / test_total
+        print(f"✓ 测试集评估 -> Loss: {test_loss:.4f}, Acc: {test_acc:.2f}%")
+        return test_loss, test_acc
+    else:
+        print("⚠️ 测试集没有提供真实标签")
+        return None, None
+
+
+# ============================================================
+# 主训练函数
+# ============================================================
+
+def train_model():
+    """主训练流程"""
+    # ---------- 1. 初始化 ----------
+    args, config = setup_training()
+    train_loader, val_loader = create_dataloaders(config)
+    model = build_model(args.model_type, config)
+    
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(
+        filter(lambda p: p.requires_grad, model.parameters()), 
+        lr=config["learning_rate"]
+    )
+    
+    # 初始化历史记录
+    history = {
+        'train_losses': [], 'train_accs': [],
+        'val_losses': [], 'val_accs': []
+    }
+    best_val_acc = 0.0
+    
+    # 加载检查点（如果需要）
+    (history['train_losses'], history['train_accs'], 
+     history['val_losses'], history['val_accs'], 
+     best_val_acc, start_epoch) = load_checkpoint_if_needed(
+        args, model, optimizer, config["device"]
+    )
+    
+    print(f"\n--- 开始训练 ({args.model_type}) ---")
+    
+    # ---------- 2. 训练循环 ----------
+    for epoch in range(start_epoch, config["num_epochs"]):
+        # 训练一个 epoch
+        train_loss, train_acc = train_one_epoch(
+            model, train_loader, criterion, optimizer, 
+            config["device"], epoch, config["num_epochs"]
+        )
+        
+        # 验证
+        val_loss, val_acc = validate(model, val_loader, criterion, config["device"])
+        
+        # 记录并打印结果
+        log_epoch_results(epoch, config["num_epochs"], train_loss, train_acc, val_loss, val_acc)
+        history['train_losses'].append(train_loss)
+        history['train_accs'].append(train_acc)
+        history['val_losses'].append(val_loss)
+        history['val_accs'].append(val_acc)
+        
+        # 更新最佳准确率
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+        
+        # 提前停止检查
+        if should_early_stop(epoch, config["num_epochs"], val_acc, best_val_acc, args.early_stopping):
+            break
+        
+        # 定期保存检查点
+        if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
+            save_intermediate_checkpoint(
+                args, config, model, optimizer, history, 
+                epoch, best_val_acc
+            )
+    
+    # ---------- 3. 训练结束保存 ----------
+    print("\n--- 训练完成，保存最终结果 ---")
+    
+    # 保存训练历史
+    final_history_path = os.path.join(config["checkpoint_dir"], f"training_history_{args.model_type}.csv")
+    save_history_csv(history, final_history_path)
+    print(f"📊 训练历史数据已保存至: {final_history_path}")
+    
+    # 保存最终曲线图
+    final_plot_path = os.path.join(config["checkpoint_dir"], f"training_curves_{args.model_type}.png")
+    plot_training_curves(history, final_plot_path)
+    print(f"📈 训练曲线图像已保存至: {final_plot_path}")
+    
+    # 保存最终模型
+    model_save_path = os.path.join(config["checkpoint_dir"], f"model_{args.model_type}.pth")
+    torch.save(model.state_dict(), model_save_path)
+    print(f"✓ 模型已保存至: {model_save_path}")
+    
+    # 最终测试集评估
+    print("\n--- 开始对测试集进行初步评估 ---")
+    test_loss, test_acc = evaluate_test_set(config, model)
+    
+    # 保存最终结果文件
+    result_txt_path = os.path.join(config["checkpoint_dir"], "result.txt")
+    save_result_txt(args.model_type, model, history, best_val_acc, result_txt_path, test_loss, test_acc)
     print(f"📝 结果已保存至: {result_txt_path}")
+
 
 if __name__ == "__main__":
     train_model()

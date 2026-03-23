@@ -1,5 +1,4 @@
 import os
-import platform
 import pandas as pd
 import numpy as np
 from PIL import Image
@@ -7,57 +6,8 @@ import torch
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
 
-IS_WINDOWS = platform.system() == "Windows"
-IS_LINUX = platform.system() == "Linux"
+from utils import get_config
 
-# --------------------------
-# Windows配置参数
-# --------------------------
-CONFIG = {
-    "data_dir": "dataset",
-    "checkpoint_dir": "checkpoint",
-    "batch_size": 16,
-    "num_workers": 6,
-    "pin_memory": True,
-    "prefetch_factor": 2,
-    "num_frames": 37,
-    "img_size": (100, 176),
-    "num_classes": 27,
-    "hidden_dim": 256,
-    "num_epochs": 20,
-    "learning_rate": 1e-3,
-    "device": "cuda" if torch.cuda.is_available() else "cpu"
-}
-
-# --------------------------
-# Linux配置参数
-# --------------------------
-CONFIG_Linux = {
-    "data_dir": "dataset",
-    "checkpoint_dir": "checkpoint",
-    "batch_size": 96,
-    "num_workers": 12,
-    "pin_memory": True,
-    "prefetch_factor": 2,
-    "num_frames": 37,
-    "img_size": (100, 176),
-    "num_classes": 27,
-    "hidden_dim": 256,
-    "num_epochs": 100,
-    "learning_rate": 1e-3,
-    "device": "cuda"
-}
-
-# 根据平台自动选择配置
-def get_config():
-    """
-    根据当前操作系统返回相应的配置。
-    Windows平台返回CONFIG
-    Linux平台返回CONFIG_Linux
-    """
-    if IS_LINUX:
-        return CONFIG_Linux.copy()
-    return CONFIG.copy()
 
 # --------------------------
 # 数据集加载器 (Dataset)
@@ -105,8 +55,10 @@ class JesterDataset(Dataset):
             try:
                 img = Image.open(img_path).convert('RGB')
             except FileNotFoundError:
-                # 使用元组来创建黑色备用图像
-                img = Image.new('RGB', (CONFIG["img_size"][1], CONFIG["img_size"][0]), color=0)
+                # 使用元组来创建黑色备用图像 (height, width)
+                config = get_config()
+                img_size = config.get("img_size", (100, 176))
+                img = Image.new('RGB', (img_size[1], img_size[0]), color=0)
                 
             if self.transform:
                 img = self.transform(img)
@@ -115,16 +67,69 @@ class JesterDataset(Dataset):
         frames_tensor = torch.stack(frames) # (37, 3, H, W)
         return frames_tensor, label, video_id
 
-# 数据预处理
-train_transform = transforms.Compose([
-    transforms.Resize(CONFIG["img_size"]),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2), 
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
 
-val_transform = transforms.Compose([
-    transforms.Resize(CONFIG["img_size"]),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
+def get_train_transform(img_size=(100, 176), normalize_mean=None, normalize_std=None):
+    """
+    获取训练集数据预处理变换
+    
+    Args:
+        img_size: 目标图像尺寸 (height, width)
+        normalize_mean: 归一化均值
+        normalize_std: 归一化标准差
+        
+    Returns:
+        transforms.Compose: 训练集变换组合
+    """
+    if normalize_mean is None:
+        normalize_mean = [0.485, 0.456, 0.406]
+    if normalize_std is None:
+        normalize_std = [0.229, 0.224, 0.225]
+
+    h = 100
+    return transforms.Compose([
+        transforms.Resize(h),
+        transforms.CenterCrop(h),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2), 
+        transforms.ToTensor(),
+        transforms.Normalize(mean=normalize_mean, std=normalize_std)
+    ])
+
+
+def get_val_transform(img_size=(100, 176), normalize_mean=None, normalize_std=None):
+    """
+    获取验证/测试集数据预处理变换
+    
+    Args:
+        img_size: 目标图像尺寸 (height, width)
+        normalize_mean: 归一化均值
+        normalize_std: 归一化标准差
+        
+    Returns:
+        transforms.Compose: 验证集变换组合
+    """
+    if normalize_mean is None:
+        normalize_mean = [0.485, 0.456, 0.406]
+    if normalize_std is None:
+        normalize_std = [0.229, 0.224, 0.225]
+        
+    h = 100
+    return transforms.Compose([
+        transforms.Resize(h),
+        transforms.CenterCrop(h),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=normalize_mean, std=normalize_std)
+    ])
+
+
+# 为了保持向后兼容，保留默认的 transforms
+_default_config = get_config()
+train_transform = get_train_transform(
+    img_size=_default_config.get("img_size", (100, 176)),
+    normalize_mean=_default_config.get("normalize_mean"),
+    normalize_std=_default_config.get("normalize_std")
+)
+val_transform = get_val_transform(
+    img_size=_default_config.get("img_size", (100, 176)),
+    normalize_mean=_default_config.get("normalize_mean"),
+    normalize_std=_default_config.get("normalize_std")
+)
