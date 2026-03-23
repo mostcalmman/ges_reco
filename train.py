@@ -21,6 +21,7 @@ def parse_args():
     parser.add_argument("--checkpoint_dir", type=str, default=config["checkpoint_dir"], help="模型和预测结果保存的目录")
     parser.add_argument("--batch_size", type=int, default=config["batch_size"])
     parser.add_argument("--epochs", type=int, default=config["num_epochs"])
+    parser.add_argument("--learning_rate", type=float, default=None, help="训练学习率；resume 时若设置则覆盖checkpoint中的学习率")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training from")
     parser.add_argument("--save_every", type=int, default=10, help="Save checkpoint every N epochs (0 to disable)")
     parser.add_argument("--early_stopping", type=bool, default=False, help="是否启用提前停止策略")
@@ -36,6 +37,8 @@ def train_model():
     config["checkpoint_dir"] = args.checkpoint_dir
     config["batch_size"] = args.batch_size
     config["num_epochs"] = args.epochs
+    if args.learning_rate is not None:
+        config["learning_rate"] = args.learning_rate
     
     os.makedirs(config["checkpoint_dir"], exist_ok=True)
     
@@ -131,6 +134,10 @@ def train_model():
             checkpoint = torch.load(args.resume, map_location=config["device"])
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if args.learning_rate is not None:
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = args.learning_rate
+                print(f"✓ resume 后学习率已覆盖为: {args.learning_rate}")
             train_losses = checkpoint.get('train_losses', [])
             train_accs = checkpoint.get('train_accs', [])
             val_losses = checkpoint.get('val_losses', [])
