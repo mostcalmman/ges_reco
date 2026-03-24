@@ -25,13 +25,27 @@ class JesterDataset(Dataset):
 
     def _sample_indices(self, total_frames):
         # 处理视频长度和模型要求不一致的情况, 返回一个长度为 num_frames 的索引列表
+        if total_frames <= 0:
+            return np.ones(self.num_frames, dtype=int)
+
         if total_frames <= self.num_frames:
             indices = np.linspace(1, total_frames, total_frames, dtype=int)
             padding = np.ones(self.num_frames - total_frames, dtype=int) * total_frames
             indices = np.concatenate((indices, padding))
-        else:
-            indices = np.linspace(1, total_frames, self.num_frames, dtype=int)
-        return indices
+            return indices
+
+        boundaries = np.linspace(0, total_frames, self.num_frames + 1, dtype=int)
+        sampled = []
+        for i in range(self.num_frames):
+            start = boundaries[i]
+            end = boundaries[i + 1]
+            if end <= start:
+                chosen = start
+            else:
+                chosen = np.random.randint(start, end)
+            sampled.append(chosen + 1)  # 转成 1-based 帧编号
+
+        return np.array(sampled, dtype=int)
 
     def __getitem__(self, idx):
         row = self.data_info.iloc[idx]

@@ -11,6 +11,11 @@ from dataset import JesterDataset, get_train_transform, get_val_transform
 from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightConvGRUPooledModel, UltraLightGRUModel, UltraLightMEGRUModel, UltraLightMELiteGRUModel
 
 
+LR_MILESTONES = [10, 20, 25]
+LR_GAMMA = 0.1
+OPTIMIZER_CHOICES = ['sgd', 'adam', 'adamw']
+
+
 # ============================================================
 # 配置与初始化函数
 # ============================================================
@@ -24,7 +29,8 @@ def parse_args():
     parser.add_argument("--checkpoint_dir", type=str, default=config["checkpoint_dir"], help="模型和预测结果保存的目录")
     parser.add_argument("--batch_size", type=int, default=config["batch_size"])
     parser.add_argument("--epochs", type=int, default=config["num_epochs"])
-    parser.add_argument("--learning_rate", type=float, default=None, help="训练学习率；resume 时若设置则覆盖checkpoint中的学习率")
+    parser.add_argument("--optimizer", type=str, choices=OPTIMIZER_CHOICES, default='adamw', help="优化器类型")
+    parser.add_argument("--learning_rate", type=float, default=None, help="训练学习率: resume 时若设置则覆盖checkpoint中的学习率")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training from")
     parser.add_argument("--save_every", type=int, default=10, help="Save checkpoint every N epochs (0 to disable)")
     parser.add_argument("--early_stopping", type=bool, default=False, help="是否启用提前停止策略")
@@ -66,6 +72,7 @@ def print_training_info(args, config):
     print(f"Batchsize: {config['batch_size']}")
     print(f"num_workers: {config['num_workers']}, pin_memory: {config['pin_memory']}")
     print(f"Model Type: {args.model_type}")
+    print(f"Optimizer: {args.optimizer.upper()}")
     print(f"Data Directory: {config['data_dir']}")
     print(f"Checkpoint Directory: {config['checkpoint_dir']}")
 
@@ -207,7 +214,30 @@ def build_model(model_type, config):
     return model.to(config["device"])
 
 
-def load_checkpoint_if_needed(args, model, optimizer, device):
+def build_optimizer(optimizer_name, model, base_lr):
+    """根据优化器名称创建优化器"""
+    trainable_params = filter(lambda p: p.requires_grad, model.parameters())
+
+    if optimizer_name == 'adam':
+        return torch.optim.Adam(trainable_params, lr=base_lr, weight_decay=5e-4)
+    if optimizer_name == 'adamw':
+        return torch.optim.AdamW(trainable_params, lr=base_lr, weight_decay=5e-4)
+
+    return torch.optim.SGD(
+        trainable_params,
+        lr=base_lr,
+        momentum=0.9,
+        weight_decay=5e-4
+    )
+
+
+def infer_lr_by_epoch(base_lr, start_epoch, milestones, gamma):
+    """根据即将开始的 epoch 自动推导当前阶段学习率"""
+    decay_count = sum(1 for milestone in milestones if start_epoch >= milestone)
+    return base_lr * (gamma ** decay_count)
+
+
+def load_checkpoint_if_needed(args, model, optimizer, device, base_lr, milestones, gamma):
     """
     如果需要，从检查点恢复训练状态
     
@@ -218,36 +248,54 @@ def load_checkpoint_if_needed(args, model, optimizer, device):
         device: 计算设备
         
     Returns:
-        tuple: (train_losses, train_accs, val_losses, val_accs, best_val_acc, start_epoch)
+        tuple: (train_losses, train_accs, val_losses, val_accs, best_val_acc, start_epoch, scheduler_state_dict)
     """
     train_losses, train_accs = [], []
     val_losses, val_accs = [], []
     best_val_acc = 0.0
     start_epoch = 0
+    scheduler_state_dict = None
     
     if args.resume is not None:
         if os.path.exists(args.resume):
             print(f"正在从检查点恢复: {args.resume}")
             checkpoint = torch.load(args.resume, map_location=device)
             model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            checkpoint_optimizer_type = checkpoint.get('optimizer_type')
+            if checkpoint_optimizer_type and checkpoint_optimizer_type != optimizer.__class__.__name__:
+                print(f"⚠️ 检查点优化器类型为 {checkpoint_optimizer_type}，当前为 {optimizer.__class__.__name__}，跳过优化器状态恢复")
+            elif 'optimizer_state_dict' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                print("✓ 已恢复优化器状态")
+            else:
+                print("⚠️ 检查点中没有 optimizer_state_dict，使用当前优化器默认状态")
             
+            start_epoch = checkpoint.get('epoch', 0) + 1
+            scheduler_state_dict = checkpoint.get('scheduler_state_dict')
+
             if args.learning_rate is not None:
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = args.learning_rate
                 print(f"✓ resume 后学习率已覆盖为: {args.learning_rate}")
+            else:
+                auto_lr = infer_lr_by_epoch(base_lr, start_epoch, milestones, gamma)
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = auto_lr
+                print(
+                    f"✓ 根据 checkpoint epoch={checkpoint.get('epoch', 0)} 自动设置学习率为: {auto_lr:.6f} "
+                    f"(milestones={milestones}, gamma={gamma})"
+                )
             
             train_losses = checkpoint.get('train_losses', [])
             train_accs = checkpoint.get('train_accs', [])
             val_losses = checkpoint.get('val_losses', [])
             val_accs = checkpoint.get('val_accs', [])
-            start_epoch = checkpoint.get('epoch', 0) + 1
             best_val_acc = checkpoint.get('best_val_acc', 0.0)
             print(f"✓ 已从检查点恢复训练: 起始 epoch {start_epoch}")
         else:
             print(f"⚠️ 检查点文件不存在: {args.resume}，从头开始训练")
     
-    return train_losses, train_accs, val_losses, val_accs, best_val_acc, start_epoch
+    return train_losses, train_accs, val_losses, val_accs, best_val_acc, start_epoch, scheduler_state_dict
 
 
 # ============================================================
@@ -347,7 +395,7 @@ def should_early_stop(epoch, num_epochs, val_acc, best_val_acc, early_stopping_e
 # 保存与绘图函数
 # ============================================================
 
-def save_intermediate_checkpoint(args, config, model, optimizer, history, epoch, best_val_acc):
+def save_intermediate_checkpoint(args, config, model, optimizer, scheduler, history, epoch, best_val_acc):
     """
     保存中间检查点（模型、历史记录、曲线图、测试结果）
     
@@ -356,6 +404,7 @@ def save_intermediate_checkpoint(args, config, model, optimizer, history, epoch,
         config: 配置字典
         model: 模型实例
         optimizer: 优化器
+        scheduler: 学习率调度器
         history: 训练历史字典
         epoch: 当前 epoch（0-based）
         best_val_acc: 最佳验证准确率
@@ -375,6 +424,8 @@ def save_intermediate_checkpoint(args, config, model, optimizer, history, epoch,
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'optimizer_type': optimizer.__class__.__name__,
+        'scheduler_state_dict': scheduler.state_dict(),
         'train_losses': history['train_losses'],
         'train_accs': history['train_accs'],
         'val_losses': history['val_losses'],
@@ -555,10 +606,8 @@ def train_model():
     model = build_model(args.model_type, config)
     
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(
-        filter(lambda p: p.requires_grad, model.parameters()), 
-        lr=config["learning_rate"]
-    )
+    base_lr = config["learning_rate"] if config["learning_rate"] != 0 else 0.01
+    optimizer = build_optimizer(args.optimizer, model, base_lr)
     
     # 初始化历史记录
     history = {
@@ -570,11 +619,31 @@ def train_model():
     # 加载检查点（如果需要）
     (history['train_losses'], history['train_accs'], 
      history['val_losses'], history['val_accs'], 
-     best_val_acc, start_epoch) = load_checkpoint_if_needed(
-        args, model, optimizer, config["device"]
+     best_val_acc, start_epoch, scheduler_state_dict) = load_checkpoint_if_needed(
+        args, model, optimizer, config["device"], base_lr, LR_MILESTONES, LR_GAMMA
     )
+
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        optimizer,
+        milestones=LR_MILESTONES,
+        gamma=LR_GAMMA
+    )
+
+    if scheduler_state_dict is not None:
+        scheduler.load_state_dict(scheduler_state_dict)
+        print(f"✓ 已恢复学习率调度器状态: last_epoch={scheduler.last_epoch}")
+    elif start_epoch > 0:
+        scheduler.last_epoch = start_epoch - 1
+        scheduler._last_lr = [group['lr'] for group in optimizer.param_groups]
+        print(f"✓ 已按起始 epoch 对齐调度器进度: last_epoch={scheduler.last_epoch}")
     
     print(f"\n--- 开始训练 ({args.model_type}) ---")
+    optimizer_name = optimizer.__class__.__name__
+    if args.optimizer in ('adam', 'adamw'):
+        print(f"优化器: {optimizer_name} | 初始学习率: {optimizer.param_groups[0]['lr']:.6f} | weight_decay: 5e-4")
+    else:
+        print(f"优化器: {optimizer_name} | 初始学习率: {optimizer.param_groups[0]['lr']:.6f} | momentum: 0.9 | weight_decay: 5e-4")
+    print(f"学习率策略: MultiStepLR, milestones={LR_MILESTONES}, gamma={LR_GAMMA}")
     
     # ---------- 2. 训练循环 ----------
     for epoch in range(start_epoch, config["num_epochs"]):
@@ -605,9 +674,12 @@ def train_model():
         # 定期保存检查点
         if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
             save_intermediate_checkpoint(
-                args, config, model, optimizer, history, 
+                args, config, model, optimizer, scheduler, history, 
                 epoch, best_val_acc
             )
+
+        # 学习率调度（按 epoch 结束后更新）
+        scheduler.step()
     
     # ---------- 3. 训练结束保存 ----------
     print("\n--- 训练完成，保存最终结果 ---")

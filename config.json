@@ -8,7 +8,7 @@
         "img_size": [100, 176],
         "num_classes": 27,
         "hidden_dim": 256,
-        "learning_rate": 0.001,
+        "learning_rate": 0.01,
         "normalize_mean": [0.485, 0.456, 0.406],
         "normalize_std": [0.229, 0.224, 0.225]
     },
@@ -22,10 +22,10 @@
     },
     
     "linux": {
-        "batch_size": 96,
-        "num_workers": 12,
+        "batch_size": 64,
+        "num_workers": 16,
         "pin_memory": true,
-        "prefetch_factor": 2,
-        "num_epochs": 100
+        "prefetch_factor": 4,
+        "num_epochs": 80
     }
 }
