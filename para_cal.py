@@ -2,7 +2,7 @@ import os
 import argparse
 import torch
 
-from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightGRUModel, UltraLightMEGRUModel, UltraLightMELiteGRUModel
+from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightGRUModel, UltraLightMEGRUModel, UltraLightMELiteGRUModel, UltraLightMEBeforeGRUModel, UltraLightParallelMEGRUModel, UltraLightMELiteBeforeGRUModel, UltraLightParallelMELiteGRUModel
 from utils import get_config, get_platform_name
 
 # 尝试导入 thop，如果未安装则给出提示
@@ -79,6 +79,30 @@ def create_model(model_type, config):
         )
     elif model_type == 'ultralight_me_lite_gru':
         model = UltraLightMELiteGRUModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
+            hidden_dim=config.get("hidden_dim", 128)
+        )
+    elif model_type == 'ultralight_me_before_gru':
+        model = UltraLightMEBeforeGRUModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
+            hidden_dim=config.get("hidden_dim", 128)
+        )
+    elif model_type == 'ultralight_parallel_me_gru':
+        model = UltraLightParallelMEGRUModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
+            hidden_dim=config.get("hidden_dim", 128)
+        )
+    elif model_type == 'ultralight_me_lite_before_gru':
+        model = UltraLightMELiteBeforeGRUModel(
+            num_classes=config.get("num_classes", 27),
+            n_segment=config.get("num_frames", 37),
+            hidden_dim=config.get("hidden_dim", 128)
+        )
+    elif model_type == 'ultralight_parallel_me_lite_gru':
+        model = UltraLightParallelMELiteGRUModel(
             num_classes=config.get("num_classes", 27),
             n_segment=config.get("num_frames", 37),
             hidden_dim=config.get("hidden_dim", 128)

@@ -5,12 +5,19 @@ Contains building blocks shared across model architectures:
 - temporal_shift: Zero-parameter temporal modeling via channel shifting (TSM)
 - ConvGRUCell / ConvGRU: Convolutional GRU for spatiotemporal sequence modeling
 - TSMResBlock: Residual block with integrated temporal shift
+- TSMMEResBlock: TSM + Motion Excitation (ME after TSM)
+- MEBeforeTSMResBlock: Motion Excitation BEFORE TSM (Scheme A)
+- MELiteBeforeTSMResBlock: Motion Excitation Lite BEFORE TSM (Scheme A)
+- ParallelMETSMResBlock: ME and TSM in PARALLEL (Scheme B)
+- ParallelMELiteTSMResBlock: ME Lite and TSM in PARALLEL (Scheme B, Lite)
 
 Reference:
     TSM: Lin et al., "TSM: Temporal Shift Module for Efficient Video
          Understanding", ICCV 2019. arXiv:1811.08383
     ConvGRU: Ballas et al., "Delving Deeper into Convolutional Networks
              for Learning Video Representations", ICLR 2016. arXiv:1511.06432
+    ACTION-Net: Wang et al., "ACTION-Net: Multipath Excitation for Action
+                Recognition", CVPR 2021.
 """
 
 import torch
@@ -218,7 +225,7 @@ class TSMResBlock(nn.Module):
 
         out += identity
         out = F.relu(out)
-        return out
+        return out  # (B*T, C_out, H_out, W_out)
 
 
 # --------------------------
@@ -376,20 +383,403 @@ class MotionExcitationLite(nn.Module):
 
 
 # --------------------------
-# MARK: TSM-ME Residual Blocks
+# MARK: Parallel ME-TSM Residual Blocks (Scheme B)
 # --------------------------
 
-class TSMMEResBlock(nn.Module):
-    """Residual block with TSM and Motion Excitation (paper version).
+class ParallelMETSMResBlock(nn.Module):
+    """Residual block with PARALLEL Motion Excitation and TSM (Scheme B).
 
-    Combines temporal shift module (TSM) with Motion Excitation module
-    for enhanced spatiotemporal modeling. ME is inserted after temporal
-    shift to excite motion-sensitive channels before the convolutions.
+    In this scheme, ME and TSM happen in PARALLEL on the original input x:
+    - ME extracts sigmoid attention weights (B*T, C, 1, 1) from x
+    - TSM performs temporal shift on x → shifted
+    - Fuse: output = shifted * me_weight + shifted (i.e., shifted * (1 + weight))
+    - Then pass to conv pipeline
+
+    This differs from TSMMEResBlock (Scheme C) where ME is applied AFTER TSM.
+
+    Architecture:
+        identity = shortcut(x)
+        me_weight = _get_me_attention(x)    # (B*T, C, 1, 1) in [0,1]
+        shifted = temporal_shift(x)        # (B*T, C, H, W)
+        fused = shifted * me_weight + shifted
+        out = ReLU(BN(Conv2d(fused)))       -- 3x3, may downsample via stride
+        out = BN(Conv2d(out))               -- 3x3, stride=1
+        out = ReLU(out + identity)
+
+    Args:
+        in_channels: Input channel count.
+        out_channels: Output channel count.
+        stride: Stride for the first convolution (spatial downsampling).
+        n_segment: Number of temporal segments for TSM.
+        reduction: Channel reduction ratio for ME module (default 4).
+
+    Reference:
+        Wang et al., "ACTION-Net: Multipath Excitation for Action Recognition",
+        CVPR 2021, Section 3.4.
+    """
+
+    def __init__(self, in_channels, out_channels, stride=1, n_segment=8, reduction=4):
+        super(ParallelMETSMResBlock, self).__init__()
+        self.n_segment = n_segment
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # Projection shortcut when dimensions change
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+        # ME components (inline, not as separate module)
+        reduced_channels = in_channels // reduction
+        self.squeeze = nn.Conv2d(in_channels, reduced_channels, kernel_size=1, bias=False)
+        self.me_bn = nn.BatchNorm2d(reduced_channels)
+        self.me_conv = nn.Conv2d(reduced_channels, reduced_channels, kernel_size=3,
+                                  padding=1, groups=reduced_channels, bias=False)  # depthwise
+        self.expand = nn.Conv2d(reduced_channels, in_channels, kernel_size=1, bias=False)
+        self.sigmoid = nn.Sigmoid()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.pad = (0, 0, 0, 0, 0, 0, 0, 1)  # temporal padding at end
+
+    def _get_me_attention(self, x):
+        """Extract motion attention weights from input x.
+
+        Returns:
+            Tensor of shape (B*T, C, 1, 1) with values in [0, 1].
+        """
+        if self.n_segment <= 1:
+            return torch.ones_like(x)[:, :, :1, :1]
+
+        nt, c, h, w = x.size()
+        n_batch = nt // self.n_segment
+
+        # Squeeze
+        x3 = self.squeeze(x)  # (B*T, C/r, H, W)
+        x3 = self.me_bn(x3)
+
+        # Reshape for temporal operations
+        x3 = x3.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
+
+        # Conv on temporal sequence
+        x3_reshaped = x3.view(nt, -1, h, w)  # (B*T, C/r, H, W)
+        x3_conv = self.me_conv(x3_reshaped)
+        x3_conv = x3_conv.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
+
+        # Split and diff
+        x3_plus0 = x3[:, :-1]  # (B, T-1, C/r, H, W) - original first T-1 frames
+        x3_plus1 = x3_conv[:, 1:]  # (B, T-1, C/r, H, W) - convolved last T-1 frames
+        x_p3 = x3_plus1 - x3_plus0  # (B, T-1, C/r, H, W) - motion features
+
+        # Pad temporal dimension
+        x_p3 = F.pad(x_p3, self.pad, mode="constant", value=0)  # (B, T, C/r, H, W)
+
+        # Reshape, pool, expand
+        x_p3 = x_p3.view(nt, -1, h, w)  # (B*T, C/r, H, W)
+        x_p3 = self.avg_pool(x_p3)  # (B*T, C/r, 1, 1)
+        x_p3 = self.expand(x_p3)  # (B*T, C, 1, 1)
+        x_p3 = self.sigmoid(x_p3)
+
+        return x_p3
+
+    def forward(self, x):
+        # x: (B*T, C, H, W)
+        identity = self.shortcut(x)
+
+        # Parallel ME + TSM fusion
+        me_weight = self._get_me_attention(x)  # (B*T, C, 1, 1)
+        shifted = temporal_shift(x, self.n_segment)
+        out = shifted * me_weight + shifted  # broadcasting: (B*T,C,H,W) * (B*T,C,1,1)
+
+        # Conv layers
+        out = F.relu(self.bn1(self.conv1(out)))
+        out = self.bn2(self.conv2(out))
+
+        out += identity
+        out = F.relu(out)
+        return out  # (B*T, C_out, H_out, W_out)
+
+
+class ParallelMELiteTSMResBlock(nn.Module):
+    """Residual block with PARALLEL Motion Excitation Lite and TSM (Scheme B, Lite version).
+
+    In this scheme, ME Lite and TSM happen in PARALLEL on the original input x:
+    - ME Lite extracts sigmoid attention weights (B*T, C, 1, 1) from x
+    - TSM performs temporal shift on x → shifted
+    - Fuse: output = shifted * me_weight + shifted (i.e., shifted * (1 + weight))
+    - Then pass to conv pipeline
+
+    ME Lite skips the depthwise 3x3 convolution, computing temporal differences
+    directly on squeezed features for reduced parameters.
+
+    Architecture:
+        identity = shortcut(x)
+        me_weight = _get_me_attention(x)    # (B*T, C, 1, 1) in [0,1]
+        shifted = temporal_shift(x)        # (B*T, C, H, W)
+        fused = shifted * me_weight + shifted
+        out = ReLU(BN(Conv2d(fused)))       -- 3x3, may downsample via stride
+        out = BN(Conv2d(out))               -- 3x3, stride=1
+        out = ReLU(out + identity)
+
+    Args:
+        in_channels: Input channel count.
+        out_channels: Output channel count.
+        stride: Stride for the first convolution (spatial downsampling).
+        n_segment: Number of temporal segments for TSM.
+        reduction: Channel reduction ratio for ME module (default 4).
+
+    Reference:
+        Wang et al., "ACTION-Net: Multipath Excitation for Action Recognition",
+        CVPR 2021, Section 3.4.
+    """
+
+    def __init__(self, in_channels, out_channels, stride=1, n_segment=8, reduction=4):
+        super(ParallelMELiteTSMResBlock, self).__init__()
+        self.n_segment = n_segment
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # Projection shortcut when dimensions change
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+        # ME Lite components (inline, no depthwise conv)
+        reduced_channels = in_channels // reduction
+        self.squeeze = nn.Conv2d(in_channels, reduced_channels, kernel_size=1, bias=False)
+        self.me_bn = nn.BatchNorm2d(reduced_channels)
+        self.expand = nn.Conv2d(reduced_channels, in_channels, kernel_size=1, bias=False)
+        self.sigmoid = nn.Sigmoid()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.pad = (0, 0, 0, 0, 0, 0, 0, 1)  # temporal padding at end
+
+    def _get_me_attention(self, x):
+        """Extract motion attention weights from input x (Lite version).
+
+        Returns:
+            Tensor of shape (B*T, C, 1, 1) with values in [0, 1].
+        """
+        if self.n_segment <= 1:
+            return torch.ones_like(x)[:, :, :1, :1]
+
+        nt, c, h, w = x.size()
+        n_batch = nt // self.n_segment
+
+        # Squeeze
+        x3 = self.squeeze(x)  # (B*T, C/r, H, W)
+        x3 = self.me_bn(x3)
+
+        # Reshape for temporal operations
+        x3 = x3.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
+
+        # Direct diff (no depthwise conv)
+        x_p3 = x3[:, 1:] - x3[:, :-1]  # (B, T-1, C/r, H, W) - motion features
+
+        # Pad temporal dimension
+        x_p3 = F.pad(x_p3, self.pad, mode="constant", value=0)  # (B, T, C/r, H, W)
+
+        # Reshape, pool, expand
+        x_p3 = x_p3.view(nt, -1, h, w)  # (B*T, C/r, H, W)
+        x_p3 = self.avg_pool(x_p3)  # (B*T, C/r, 1, 1)
+        x_p3 = self.expand(x_p3)  # (B*T, C, 1, 1)
+        x_p3 = self.sigmoid(x_p3)
+
+        return x_p3
+
+    def forward(self, x):
+        # x: (B*T, C, H, W)
+        identity = self.shortcut(x)
+
+        # Parallel ME Lite + TSM fusion
+        me_weight = self._get_me_attention(x)  # (B*T, C, 1, 1)
+        shifted = temporal_shift(x, self.n_segment)
+        out = shifted * me_weight + shifted  # broadcasting: (B*T,C,H,W) * (B*T,C,1,1)
+
+        # Conv layers
+        out = F.relu(self.bn1(self.conv1(out)))
+        out = self.bn2(self.conv2(out))
+
+        out += identity
+        out = F.relu(out)
+        return out  # (B*T, C_out, H_out, W_out)
+
+
+# --------------------------
+# MARK: ME-Before-TSM Residual Blocks (Scheme A)
+# --------------------------
+
+class MEBeforeTSMResBlock(nn.Module):
+    """Residual block with Motion Excitation BEFORE Temporal Shift (Scheme A).
+
+    Applies Motion Excitation module BEFORE temporal shift to ensure ME sees
+    clean channel semantics without TSM-shift interference. This is the
+    opposite ordering from TSMMEResBlock.
+
+    Architecture:
+        identity = shortcut(x)              # use original x for shortcut
+        out = me(x)                        # APPLY ME FIRST on clean features
+        out = temporal_shift(out)          # THEN apply TSM on ME output
+        out = ReLU(BN(Conv2d(out)))       -- 3x3, may downsample via stride
+        out = BN(Conv2d(out))             -- 3x3, stride=1
+        out = ReLU(out + identity)
+
+    Rationale:
+        ME captures temporal motion via frame differencing. By applying ME
+        before TSM, we ensure the motion-sensitive channel excitation is
+        computed on unshifted features, then the motion-enhanced features
+        are temporally shifted for further processing.
+
+    Args:
+        in_channels: Input channel count.
+        out_channels: Output channel count.
+        stride: Stride for the first convolution (spatial downsampling).
+        n_segment: Number of temporal segments for TSM.
+        reduction: Channel reduction ratio for ME module (default 4).
+
+    Reference:
+        Wang et al., "ACTION-Net: Multipath Excitation for Action Recognition",
+        CVPR 2021, Section 3.3.
+    """
+
+    def __init__(self, in_channels, out_channels, stride=1, n_segment=8, reduction=4):
+        super(MEBeforeTSMResBlock, self).__init__()
+        self.n_segment = n_segment
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # Projection shortcut when dimensions change
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+        # Motion Excitation module (applied BEFORE TSM)
+        self.me = MotionExcitation(channels=in_channels, n_segment=n_segment, reduction=reduction)
+
+    def forward(self, x):
+        # x: (B*T, C, H, W)
+        # Shortcut uses original x (before ME)
+        identity = self.shortcut(x)
+
+        # Motion excitation FIRST on clean features
+        out = self.me(x)
+
+        # THEN apply temporal shift on ME output
+        out = temporal_shift(out, self.n_segment)
+
+        # Conv layers
+        out = F.relu(self.bn1(self.conv1(out)))
+        out = self.bn2(self.conv2(out))
+
+        out += identity
+        out = F.relu(out)
+        return out  # (B*T, C_out, H_out, W_out)
+
+
+class MELiteBeforeTSMResBlock(nn.Module):
+    """Residual block with Motion Excitation Lite BEFORE Temporal Shift (Scheme A).
+
+    Applies Motion Excitation Lite module BEFORE temporal shift. This is the
+    opposite ordering from TSMMELiteResBlock, with the same rationale:
+    ME sees clean channel semantics before TSM shift interference.
+
+    Architecture:
+        identity = shortcut(x)              # use original x for shortcut
+        out = me_lite(x)                    # APPLY ME LITE FIRST on clean features
+        out = temporal_shift(out)           # THEN apply TSM on ME output
+        out = ReLU(BN(Conv2d(out)))        -- 3x3, may downsample via stride
+        out = BN(Conv2d(out))              -- 3x3, stride=1
+        out = ReLU(out + identity)
+
+    Args:
+        in_channels: Input channel count.
+        out_channels: Output channel count.
+        stride: Stride for the first convolution (spatial downsampling).
+        n_segment: Number of temporal segments for TSM.
+        reduction: Channel reduction ratio for ME module (default 4).
+
+    Reference:
+        Wang et al., "ACTION-Net: Multipath Excitation for Action Recognition",
+        CVPR 2021, Section 3.3.
+    """
+
+    def __init__(self, in_channels, out_channels, stride=1, n_segment=8, reduction=4):
+        super(MELiteBeforeTSMResBlock, self).__init__()
+        self.n_segment = n_segment
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # Projection shortcut when dimensions change
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+        # Motion Excitation Lite module (applied BEFORE TSM)
+        self.me = MotionExcitationLite(channels=in_channels, n_segment=n_segment, reduction=reduction)
+
+    def forward(self, x):
+        # x: (B*T, C, H, W)
+        # Shortcut uses original x (before ME)
+        identity = self.shortcut(x)
+
+        # Motion excitation Lite FIRST on clean features
+        out = self.me(x)
+
+        # THEN apply temporal shift on ME output
+        out = temporal_shift(out, self.n_segment)
+
+        # Conv layers
+        out = F.relu(self.bn1(self.conv1(out)))
+        out = self.bn2(self.conv2(out))
+
+        out += identity
+        out = F.relu(out)
+        return out  # (B*T, C_out, H_out, W_out)
+
+
+class TSMMEResBlock(nn.Module):
+    """Residual block with TSM and Motion Excitation.
+
+    Combines temporal shift module (TSM) with Motion Excitation for
+    capturing motion information.
 
     Architecture:
         identity = shortcut(x)
         out = temporal_shift(x)
-        out = me(out)                    # INSERT ME AFTER TSM
+        out = me(out)                   # INSERT ME AFTER TSM
         out = ReLU(BN(Conv2d(out)))     -- 3x3, may downsample via stride
         out = BN(Conv2d(out))           -- 3x3, stride=1
         out = ReLU(out + identity)
@@ -403,7 +793,7 @@ class TSMMEResBlock(nn.Module):
 
     Reference:
         Wang et al., "ACTION-Net: Multipath Excitation for Action Recognition",
-        CVPR 2021, Section 3.4.
+        CVPR 2021, Section 3.3.
     """
 
     def __init__(self, in_channels, out_channels, stride=1, n_segment=8, reduction=4):
