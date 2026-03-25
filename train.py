@@ -8,8 +8,7 @@ import matplotlib.pyplot as plt
 
 from utils import get_config, get_platform_name, is_windows, is_linux
 from dataset import JesterDataset, get_train_transform, get_val_transform
-from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightConvGRUPooledModel, UltraLightGRUModel, UltraLightMEGRUModel, UltraLightMELiteGRUModel, UltraLightMEBeforeGRUModel, UltraLightParallelMEGRUModel, UltraLightMELiteBeforeGRUModel, UltraLightParallelMELiteGRUModel
-
+from models import *
 
 LR_MILESTONES = [10, 20, 25]
 LR_GAMMA = 0.1
@@ -225,6 +224,12 @@ def build_model(model_type, config):
         )
     elif model_type == 'ultralight_parallel_me_lite_gru':
         model = UltraLightParallelMELiteGRUModel(
+            **model_kwargs,
+            n_segment=config["num_frames"],
+            hidden_dim=config["hidden_dim"]
+        )
+    elif model_type == 'ParallelMEAdd':
+        model = ParallelMEGRUAddModel(
             **model_kwargs,
             n_segment=config["num_frames"],
             hidden_dim=config["hidden_dim"]

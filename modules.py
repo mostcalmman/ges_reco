@@ -506,6 +506,94 @@ class ParallelMETSMResBlock(nn.Module):
         out = F.relu(out)
         return out  # (B*T, C_out, H_out, W_out)
 
+class ParallelMETSMAddResBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1, n_segment=8, reduction=4):
+        super(ParallelMETSMAddResBlock, self).__init__()
+        self.n_segment = n_segment
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # Projection shortcut when dimensions change
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+        # ME components (inline, not as separate module)
+        reduced_channels = in_channels // reduction
+        self.squeeze = nn.Conv2d(in_channels, reduced_channels, kernel_size=1, bias=False)
+        self.me_bn = nn.BatchNorm2d(reduced_channels)
+        self.me_conv = nn.Conv2d(reduced_channels, reduced_channels, kernel_size=3,
+                                  padding=1, groups=reduced_channels, bias=False)  # depthwise
+        self.expand = nn.Conv2d(reduced_channels, in_channels, kernel_size=1, bias=False)
+        self.sigmoid = nn.Sigmoid()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.pad = (0, 0, 0, 0, 0, 0, 0, 1)  # temporal padding at end
+
+    def _get_me_attention(self, x):
+        """Extract motion attention weights from input x.
+
+        Returns:
+            Tensor of shape (B*T, C, 1, 1) with values in [0, 1].
+        """
+        if self.n_segment <= 1:
+            return torch.ones_like(x)[:, :, :1, :1]
+
+        nt, c, h, w = x.size()
+        n_batch = nt // self.n_segment
+
+        # Squeeze
+        x3 = self.squeeze(x)  # (B*T, C/r, H, W)
+        x3 = self.me_bn(x3)
+
+        # Reshape for temporal operations
+        x3 = x3.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
+
+        # Conv on temporal sequence
+        x3_reshaped = x3.view(nt, -1, h, w)  # (B*T, C/r, H, W)
+        x3_conv = self.me_conv(x3_reshaped)
+        x3_conv = x3_conv.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
+
+        # Split and diff
+        x3_plus0 = x3[:, :-1]  # (B, T-1, C/r, H, W) - original first T-1 frames
+        x3_plus1 = x3_conv[:, 1:]  # (B, T-1, C/r, H, W) - convolved last T-1 frames
+        x_p3 = x3_plus1 - x3_plus0  # (B, T-1, C/r, H, W) - motion features
+
+        # Pad temporal dimension
+        x_p3 = F.pad(x_p3, self.pad, mode="constant", value=0)  # (B, T, C/r, H, W)
+
+        # Reshape, pool, expand
+        x_p3 = x_p3.view(nt, -1, h, w)  # (B*T, C/r, H, W)
+        x_p3 = self.avg_pool(x_p3)  # (B*T, C/r, 1, 1)
+        x_p3 = self.expand(x_p3)  # (B*T, C, 1, 1)
+        x_p3 = self.sigmoid(x_p3)
+
+        return x_p3
+
+    def forward(self, x):
+        # x: (B*T, C, H, W)
+        identity = self.shortcut(x)
+
+        # Parallel ME + TSM fusion
+        me_weight = self._get_me_attention(x)  # (B*T, C, 1, 1)
+        shifted = temporal_shift(x, self.n_segment)
+        out = x * me_weight + shifted  # broadcasting: (B*T,C,H,W) * (B*T,C,1,1)
+
+        # Conv layers
+        out = F.relu(self.bn1(self.conv1(out)))
+        out = self.bn2(self.conv2(out))
+
+        out += identity
+        out = F.relu(out)
+        return out  # (B*T, C_out, H_out, W_out)
 
 class ParallelMELiteTSMResBlock(nn.Module):
     """Residual block with PARALLEL Motion Excitation Lite and TSM (Scheme B, Lite version).
