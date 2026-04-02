@@ -1,5 +1,7 @@
 import os
 import argparse
+import shutil
+from datetime import datetime
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -35,6 +37,20 @@ def parse_args():
     return parser.parse_args()
 
 
+def backup_config_to_checkpoint(config_path, checkpoint_dir):
+    """将本次训练配置文件备份到 checkpoint 目录"""
+    if not os.path.exists(config_path):
+        print(f"⚠️ 配置文件不存在，跳过备份: {config_path}")
+        return None
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_filename = f"config_{timestamp}.json"
+    backup_path = os.path.join(checkpoint_dir, backup_filename)
+    shutil.copy2(config_path, backup_path)
+    print(f"✓ 配置文件已备份: {backup_path}")
+    return backup_path
+
+
 def setup_training():
     """
     初始化训练环境：解析参数、更新配置、创建目录、打印信息
@@ -68,6 +84,9 @@ def setup_training():
     
     # 创建检查点目录
     os.makedirs(config["checkpoint_dir"], exist_ok=True)
+
+    # 在训练开始前备份本次配置文件
+    backup_config_to_checkpoint("config.json", config["checkpoint_dir"])
     
     # 打印训练配置信息
     print_training_info(args, config)
