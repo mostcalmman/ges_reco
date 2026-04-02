@@ -135,15 +135,15 @@ def get_val_transform(img_size=(100, 176), normalize_mean=None, normalize_std=No
     ])
 
 
-# 为了保持向后兼容，保留默认的 transforms
-_default_config = get_config()
-train_transform = get_train_transform(
-    img_size=_default_config.get("img_size", (100, 176)),
-    normalize_mean=_default_config.get("normalize_mean"),
-    normalize_std=_default_config.get("normalize_std")
-)
-val_transform = get_val_transform(
-    img_size=_default_config.get("img_size", (100, 176)),
-    normalize_mean=_default_config.get("normalize_mean"),
-    normalize_std=_default_config.get("normalize_std")
-)
+# # 为了保持向后兼容，保留默认的 transforms
+# _default_config = get_config()
+# train_transform = get_train_transform(
+#     img_size=_default_config.get("img_size", (100, 176)),
+#     normalize_mean=_default_config.get("normalize_mean"),
+#     normalize_std=_default_config.get("normalize_std")
+# )
+# val_transform = get_val_transform(
+#     img_size=_default_config.get("img_size", (100, 176)),
+#     normalize_mean=_default_config.get("normalize_mean"),
+#     normalize_std=_default_config.get("normalize_std")
+# )

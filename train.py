@@ -22,17 +22,16 @@ OPTIMIZER_CHOICES = ['sgd', 'adam', 'adamw']
 def parse_args():
     """解析命令行参数"""
     config = get_config()
+    model_type = config.get("model_type", "resnet")
+    default_checkpoint_dir = os.path.join(config["checkpoint_dir"], model_type)
     parser = argparse.ArgumentParser(description="Gesture Recognition Training")
-    parser.add_argument("--model_type", type=str, choices=modelList, default='resnet', help="使用的模型结构")
-    parser.add_argument("--data_dir", type=str, default=config["data_dir"], help="数据集所在的目录")
-    parser.add_argument("--checkpoint_dir", type=str, default=config["checkpoint_dir"], help="模型和预测结果保存的目录")
-    parser.add_argument("--batch_size", type=int, default=config["batch_size"])
-    parser.add_argument("--epochs", type=int, default=config["num_epochs"])
-    parser.add_argument("--optimizer", type=str, choices=OPTIMIZER_CHOICES, default='adamw', help="优化器类型")
-    parser.add_argument("--learning_rate", type=float, default=None, help="训练学习率: resume 时若设置则覆盖checkpoint中的学习率")
+    parser.add_argument(
+        "--checkpoint_dir",
+        type=str,
+        default=default_checkpoint_dir,
+        help="模型和预测结果保存目录，默认: config.checkpoint_dir/{model_type}",
+    )
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training from")
-    parser.add_argument("--save_every", type=int, default=10, help="Save checkpoint every N epochs (0 to disable)")
-    parser.add_argument("--early_stopping", type=bool, default=False, help="是否启用提前停止策略")
     return parser.parse_args()
 
 
@@ -45,14 +44,27 @@ def setup_training():
     """
     args = parse_args()
     config = get_config()
+
+    model_type = config.get("model_type", "resnet")
+    if model_type not in modelList:
+        raise ValueError(
+            f"config.json 中的 model_type 无效: {model_type}，"
+            f"可选值: {modelList}"
+        )
+    optimizer_name = config.get("optimizer", "adamw")
+    if optimizer_name not in OPTIMIZER_CHOICES:
+        raise ValueError(
+            f"config.json 中的 optimizer 无效: {optimizer_name}，"
+            f"可选值: {OPTIMIZER_CHOICES}"
+        )
+
+    config["optimizer"] = optimizer_name
+    config["save_every"] = int(config.get("save_every", 10))
+    config["early_stopping"] = bool(config.get("early_stopping", False))
+    args.model_type = model_type
     
     # 更新配置
-    config["data_dir"] = args.data_dir
     config["checkpoint_dir"] = args.checkpoint_dir
-    config["batch_size"] = args.batch_size
-    config["num_epochs"] = args.epochs
-    if args.learning_rate is not None:
-        config["learning_rate"] = args.learning_rate
     
     # 创建检查点目录
     os.makedirs(config["checkpoint_dir"], exist_ok=True)
@@ -71,7 +83,7 @@ def print_training_info(args, config):
     print(f"Batchsize: {config['batch_size']}")
     print(f"num_workers: {config['num_workers']}, pin_memory: {config['pin_memory']}")
     print(f"Model Type: {args.model_type}")
-    print(f"Optimizer: {args.optimizer.upper()}")
+    print(f"Optimizer: {config['optimizer'].upper()}")
     print(f"Data Directory: {config['data_dir']}")
     print(f"Checkpoint Directory: {config['checkpoint_dir']}")
 
@@ -193,18 +205,13 @@ def load_checkpoint_if_needed(args, model, optimizer, device, base_lr, milestone
             start_epoch = checkpoint.get('epoch', 0) + 1
             scheduler_state_dict = checkpoint.get('scheduler_state_dict')
 
-            if args.learning_rate is not None:
-                for param_group in optimizer.param_groups:
-                    param_group['lr'] = args.learning_rate
-                print(f"✓ resume 后学习率已覆盖为: {args.learning_rate}")
-            else:
-                auto_lr = infer_lr_by_epoch(base_lr, start_epoch, milestones, gamma)
-                for param_group in optimizer.param_groups:
-                    param_group['lr'] = auto_lr
-                print(
-                    f"✓ 根据 checkpoint epoch={checkpoint.get('epoch', 0)} 自动设置学习率为: {auto_lr:.6f} "
-                    f"(milestones={milestones}, gamma={gamma})"
-                )
+            auto_lr = infer_lr_by_epoch(base_lr, start_epoch, milestones, gamma)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = auto_lr
+            print(
+                f"✓ 根据 checkpoint epoch={checkpoint.get('epoch', 0)} 自动设置学习率为: {auto_lr:.6f} "
+                f"(milestones={milestones}, gamma={gamma})"
+            )
             
             train_losses = checkpoint.get('train_losses', [])
             train_accs = checkpoint.get('train_accs', [])
@@ -525,9 +532,9 @@ def train_model():
     train_loader, val_loader = create_dataloaders(config)
     model = build_model(args.model_type, config, device=config["device"])
     
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1) # change: add label smoothing
     base_lr = config["learning_rate"] if config["learning_rate"] != 0 else 0.01
-    optimizer = build_optimizer(args.optimizer, model, base_lr)
+    optimizer = build_optimizer(config["optimizer"], model, base_lr)
     
     # 初始化历史记录
     history = {
@@ -559,7 +566,7 @@ def train_model():
     
     print(f"\n--- 开始训练 ({args.model_type}) ---")
     optimizer_name = optimizer.__class__.__name__
-    if args.optimizer in ('adam', 'adamw'):
+    if config["optimizer"] in ('adam', 'adamw'):
         print(f"优化器: {optimizer_name} | 初始学习率: {optimizer.param_groups[0]['lr']:.6f} | weight_decay: 5e-4")
     else:
         print(f"优化器: {optimizer_name} | 初始学习率: {optimizer.param_groups[0]['lr']:.6f} | momentum: 0.9 | weight_decay: 5e-4")
@@ -588,11 +595,11 @@ def train_model():
             best_val_acc = val_acc
         
         # 提前停止检查
-        if should_early_stop(epoch, config["num_epochs"], val_acc, best_val_acc, args.early_stopping):
+        if should_early_stop(epoch, config["num_epochs"], val_acc, best_val_acc, config["early_stopping"]):
             break
         
         # 定期保存检查点
-        if args.save_every > 0 and (epoch + 1) % args.save_every == 0:
+        if config["save_every"] > 0 and (epoch + 1) % config["save_every"] == 0:
             save_intermediate_checkpoint(
                 args, config, model, optimizer, scheduler, history, 
                 epoch, best_val_acc
@@ -632,4 +639,4 @@ def train_model():
 if __name__ == "__main__":
     train_model()
 
-# python train.py --model_type ultralight_convgru --checkpoint_dir ./checkpoint/ultraLight
+# python train.py --checkpoint_dir ./checkpoint/ultraLight
