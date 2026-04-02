@@ -2,7 +2,7 @@
     "_comment": "手势识别项目配置文件 - 根据平台自动选择合适的配置",
     
     "common": {
-        "model_type": "resnet",
+        "model_type": "me_before_1",
         "data_dir": "dataset",
         "checkpoint_dir": "checkpoint",
         "optimizer": "adamw",
