@@ -73,8 +73,10 @@ def setup_training():
             f"config.json 中的 optimizer 无效: {optimizer_name}，"
             f"可选值: {OPTIMIZER_CHOICES}"
         )
+    default_weight_decay = 1e-3 if optimizer_name in ('adam', 'adamw') else 5e-4
 
     config["optimizer"] = optimizer_name
+    config["weight_decay"] = float(config.get("weight_decay", default_weight_decay))
     config["save_every"] = int(config.get("save_every", 10))
     config["early_stopping"] = bool(config.get("early_stopping", False))
     args.model_type = model_type
@@ -103,6 +105,7 @@ def print_training_info(args, config):
     print(f"num_workers: {config['num_workers']}, pin_memory: {config['pin_memory']}")
     print(f"Model Type: {args.model_type}")
     print(f"Optimizer: {config['optimizer'].upper()}")
+    print(f"Weight Decay: {config['weight_decay']}")
     print(f"Data Directory: {config['data_dir']}")
     print(f"Checkpoint Directory: {config['checkpoint_dir']}")
 
@@ -165,20 +168,20 @@ def create_dataloaders(config):
     return train_loader, val_loader
 
 
-def build_optimizer(optimizer_name, model, base_lr):
+def build_optimizer(optimizer_name, model, base_lr, weight_decay):
     """根据优化器名称创建优化器"""
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
 
     if optimizer_name == 'adam':
-        return torch.optim.Adam(trainable_params, lr=base_lr, weight_decay=5e-4)
+        return torch.optim.Adam(trainable_params, lr=base_lr, weight_decay=weight_decay)
     if optimizer_name == 'adamw':
-        return torch.optim.AdamW(trainable_params, lr=base_lr, weight_decay=5e-4)
+        return torch.optim.AdamW(trainable_params, lr=base_lr, weight_decay=weight_decay)
 
     return torch.optim.SGD(
         trainable_params,
         lr=base_lr,
         momentum=0.9,
-        weight_decay=5e-4
+        weight_decay=weight_decay
     )
 
 
@@ -553,7 +556,7 @@ def train_model():
     
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1) # change: add label smoothing
     base_lr = config["learning_rate"] if config["learning_rate"] != 0 else 0.01
-    optimizer = build_optimizer(config["optimizer"], model, base_lr)
+    optimizer = build_optimizer(config["optimizer"], model, base_lr, config["weight_decay"])
     
     # 初始化历史记录
     history = {
@@ -569,10 +572,10 @@ def train_model():
         args, model, optimizer, config["device"], base_lr, LR_MILESTONES, LR_GAMMA
     )
 
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        milestones=LR_MILESTONES,
-        gamma=LR_GAMMA
+        T_max=config["num_epochs"],
+        eta_min=1e-5
     )
 
     if scheduler_state_dict is not None:
@@ -585,10 +588,11 @@ def train_model():
     
     print(f"\n--- 开始训练 ({args.model_type}) ---")
     optimizer_name = optimizer.__class__.__name__
+    weight_decay = optimizer.param_groups[0].get('weight_decay', config["weight_decay"])
     if config["optimizer"] in ('adam', 'adamw'):
-        print(f"优化器: {optimizer_name} | 初始学习率: {optimizer.param_groups[0]['lr']:.6f} | weight_decay: 5e-4")
+        print(f"优化器: {optimizer_name} | 初始学习率: {optimizer.param_groups[0]['lr']:.6f} | weight_decay: {weight_decay}")
     else:
-        print(f"优化器: {optimizer_name} | 初始学习率: {optimizer.param_groups[0]['lr']:.6f} | momentum: 0.9 | weight_decay: 5e-4")
+        print(f"优化器: {optimizer_name} | 初始学习率: {optimizer.param_groups[0]['lr']:.6f} | momentum: 0.9 | weight_decay: {weight_decay}")
     print(f"学习率策略: MultiStepLR, milestones={LR_MILESTONES}, gamma={LR_GAMMA}")
     
     # ---------- 2. 训练循环 ----------

@@ -580,10 +580,10 @@ class UltraLightMEBeforeGRUModel_1(nn.Module):
 
         # GRU temporal aggregation
         rnn_out, hidden = self.gru(x)           # hidden: (1, B, hidden_dim)
-        # last_hidden = hidden[-1]                # (B, hidden_dim)
+        last_hidden = hidden[-1]                # (B, hidden_dim)
         avg_feat = torch.mean(rnn_out, dim=1)   # (B, hidden_dim)
 
-        last_hidden = self.dropout(avg_feat)   # change: add dropout
+        last_hidden = self.dropout(last_hidden) # change: add dropout
         out = self.fc(last_hidden)              # (B, num_classes)
         return out
 
