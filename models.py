@@ -14,7 +14,7 @@ modelList = ['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru',
              'ultralight_convgru_pooled', 'lightweight_tsm_resnet', 'ultralight_convgru_resnet',
              'ultralight_gru', 'ultralight_me_gru', 'ultralight_me_lite_gru',
              'ultralight_me_before_gru', 'ultralight_parallel_me_gru',
-             'ultralight_me_lite_before_gru', 'ultralight_parallel_me_lite_gru', 'ParallelMEAdd']
+             'ultralight_me_lite_before_gru', 'ultralight_parallel_me_lite_gru']
 
 
 def _load_resnet18_weights_to_tsm(target_model, pretrained_resnet):
@@ -608,57 +608,6 @@ class UltraLightParallelMEGRUModel(nn.Module):
         out = self.fc(last_hidden)              # (B, num_classes)
         return out
 
-# MARK: LSR
-class ParallelMEGRUAddModel(nn.Module):
-    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
-        super(ParallelMEGRUAddModel, self).__init__()
-        self.n_segment = n_segment
-        self.hidden_dim = hidden_dim
-
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True)
-        )
-
-        self.layer1 = TSMResBlock(32, 32, stride=1, n_segment=n_segment)
-        self.layer2 = TSMResBlock(32, 64, stride=2, n_segment=n_segment)
-        self.layer3 = ParallelMETSMAddResBlock(64, 128, stride=2, n_segment=n_segment, reduction=4)
-
-        # GRU input: AdaptiveAvgPool2d(1,1) collapses spatial dims to 128-d vector per frame
-        self.gru = nn.GRU(
-            input_size=128,
-            hidden_size=hidden_dim,
-            num_layers=1,
-            batch_first=True
-        )
-
-        self.fc = nn.Linear(hidden_dim, num_classes)
-
-    def forward(self, x):
-        """
-        Args:
-            x: (B, T, 3, H, W) video frame sequence.
-        Returns:
-            (B, num_classes) classification logits.
-        """
-        b, t, c, h, w = x.size()
-
-        x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
-        x = self.conv1(x)                       # (B*T, 32, H/2, W/2)
-        x = self.layer1(x)                      # (B*T, 32, H/2, W/2)
-        x = self.layer2(x)                      # (B*T, 64, H/4, W/4)
-        x = self.layer3(x)                      # (B*T, 128, H/8, W/8)
-
-        x = F.adaptive_avg_pool2d(x, (1, 1))    # (B*T, 128, 1, 1)
-        x = x.view(b, t, -1)                    # (B, T, 128)
-
-        # GRU temporal aggregation
-        rnn_out, hidden = self.gru(x)           # hidden: (1, B, hidden_dim)
-        last_hidden = hidden[-1]                # (B, hidden_dim)
-
-        out = self.fc(last_hidden)              # (B, num_classes)
-        return out
 
 # --------------------------
 # MARK: UltraLightMELiteBeforeGRU

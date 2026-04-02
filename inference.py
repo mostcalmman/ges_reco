@@ -9,15 +9,15 @@ from torch.utils.data import DataLoader
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from utils import get_config, get_platform_name
+from utils import get_config, get_platform_name, build_model, load_model_weights
 from dataset import JesterDataset, get_val_transform
-from models import ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightGRUModel, UltraLightMEGRUModel, UltraLightMELiteGRUModel, UltraLightMEBeforeGRUModel, UltraLightParallelMEGRUModel, UltraLightMELiteBeforeGRUModel, UltraLightParallelMELiteGRUModel
+from models import modelList
 
 
 def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description="Gesture Recognition Inference")
-    parser.add_argument("--model_type", type=str, choices=['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru', 'lightweight_tsm_resnet', 'ultralight_convgru_resnet', 'ultralight_gru', 'ultralight_me_gru', 'ultralight_me_lite_gru', 'ultralight_me_before_gru', 'ultralight_parallel_me_gru', 'ultralight_me_lite_before_gru', 'ultralight_parallel_me_lite_gru'], default='resnet', help="使用的模型结构")
+    parser.add_argument("--model_type", type=str, choices=modelList, default='resnet', help="使用的模型结构")
     parser.add_argument("--csv_path", type=str, default="", help="要推理的 CSV 文件路径(数据集推理)")
     parser.add_argument("--root_dir", type=str, default="dataset/Test", help="要推理的视频图片根目录")
     parser.add_argument("--video_path", type=str, default="", help="单个视频文件夹路径(单视频推理)")
@@ -40,79 +40,13 @@ def load_model(model_type, config, device, model_weight_path):
     Returns:
         model: 加载好权重的模型实例
     """
-    if model_type == 'resnet_gru':
-        model = ResNetGRUVideoModel(num_classes=config["num_classes"], hidden_dim=config["hidden_dim"])
-    elif model_type == 'lightweight_tsm':
-        model = LightweightTSMModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37)
-        )
-    elif model_type == 'ultralight_convgru':
-        model = UltraLightConvGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37)
-        )
-    elif model_type == 'lightweight_tsm_resnet':
-        model = LightweightTSMResNetModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            pretrained=False  # 推理时不加载预训练权重
-        )
-    elif model_type == 'ultralight_convgru_resnet':
-        model = UltraLightConvGRUResNetModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            pretrained=False  # 推理时不加载预训练权重
-        )
-    elif model_type == 'ultralight_gru':
-        model = UltraLightGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    elif model_type == 'ultralight_me_gru':
-        model = UltraLightMEGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    elif model_type == 'ultralight_me_lite_gru':
-        model = UltraLightMELiteGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    elif model_type == 'ultralight_me_before_gru':
-        model = UltraLightMEBeforeGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    elif model_type == 'ultralight_parallel_me_gru':
-        model = UltraLightParallelMEGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    elif model_type == 'ultralight_me_lite_before_gru':
-        model = UltraLightMELiteBeforeGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    elif model_type == 'ultralight_parallel_me_lite_gru':
-        model = UltraLightParallelMELiteGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    else:
-        model = ResNetVideoModel(num_classes=config["num_classes"])
-    
-    model.load_state_dict(torch.load(model_weight_path, map_location=device))
-    model.to(device)
-    model.eval()
-    return model
+    model = build_model(
+        model_type=model_type,
+        config=config,
+        pretrained=False,  # 推理阶段不触发额外预训练权重下载
+        device=device,
+    )
+    return load_model_weights(model, model_weight_path, device)
 
 
 def infer_single_video(args, model, device, config):

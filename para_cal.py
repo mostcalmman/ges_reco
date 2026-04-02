@@ -2,10 +2,9 @@ import os
 import argparse
 import torch
 
-from models import modelList, ResNetVideoModel, ResNetGRUVideoModel, LightweightTSMModel, UltraLightConvGRUModel, LightweightTSMResNetModel, UltraLightConvGRUResNetModel, UltraLightGRUModel, UltraLightMEGRUModel, UltraLightMELiteGRUModel, UltraLightMEBeforeGRUModel, UltraLightParallelMEGRUModel, UltraLightMELiteBeforeGRUModel, UltraLightParallelMELiteGRUModel
-from utils import get_config, get_platform_name
+from models import modelList
+from utils import get_config, get_platform_name, build_model
 
-# 尝试导入 thop，如果未安装则给出提示
 try:
     from thop import profile
     THOP_AVAILABLE = True
@@ -19,99 +18,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Calculate Model Parameters")
     parser.add_argument("--model_type", type=str, choices=modelList, required=True, help="使用的模型结构名称")
     return parser.parse_args()
-
-
-def create_model(model_type, config):
-    """
-    根据模型类型创建模型实例
-    
-    Args:
-        model_type: 模型类型字符串
-        config: 配置字典
-        
-    Returns:
-        nn.Module: 初始化后的模型
-    """
-    if model_type == 'resnet_gru':
-        model = ResNetGRUVideoModel(
-            num_classes=config.get("num_classes", 27), 
-            hidden_dim=config.get("hidden_dim", 256),
-            freeze_backbone=True
-        )
-    elif model_type == 'resnet':
-        model = ResNetVideoModel(
-            num_classes=config.get("num_classes", 27),
-            freeze_backbone=True
-        )
-    elif model_type == 'lightweight_tsm':
-        model = LightweightTSMModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37)
-        )
-    elif model_type == 'ultralight_convgru':
-        model = UltraLightConvGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37)
-        )
-    elif model_type == 'lightweight_tsm_resnet':
-        model = LightweightTSMResNetModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            pretrained=True
-        )
-    elif model_type == 'ultralight_convgru_resnet':
-        model = UltraLightConvGRUResNetModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            pretrained=True
-        )
-    elif model_type == 'ultralight_gru':
-        model = UltraLightGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    elif model_type == 'ultralight_me_gru':
-        model = UltraLightMEGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    elif model_type == 'ultralight_me_lite_gru':
-        model = UltraLightMELiteGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    elif model_type == 'ultralight_me_before_gru':
-        model = UltraLightMEBeforeGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    elif model_type == 'ultralight_parallel_me_gru':
-        model = UltraLightParallelMEGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    elif model_type == 'ultralight_me_lite_before_gru':
-        model = UltraLightMELiteBeforeGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    elif model_type == 'ultralight_parallel_me_lite_gru':
-        model = UltraLightParallelMELiteGRUModel(
-            num_classes=config.get("num_classes", 27),
-            n_segment=config.get("num_frames", 37),
-            hidden_dim=config.get("hidden_dim", 128)
-        )
-    else:
-        raise ValueError(f"未知的模型类型: {model_type}")
-    
-    return model
-
 
 def calculate_parameters(model):
     """
@@ -171,7 +77,7 @@ def main():
     print(f"=== 模型 [{args.model_type}] 统计信息 ===")
     
     # 创建模型
-    model = create_model(args.model_type, config)
+    model = build_model(args.model_type, config)
     
     # 计算参数量
     total_params, trainable_params, frozen_params = calculate_parameters(model)

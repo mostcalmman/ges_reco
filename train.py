@@ -6,9 +6,9 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 
-from utils import get_config, get_platform_name, is_windows, is_linux
+from utils import get_config, get_platform_name, is_windows, is_linux, build_model
 from dataset import JesterDataset, get_train_transform, get_val_transform
-from models import *
+from models import modelList
 
 LR_MILESTONES = [10, 20, 25]
 LR_GAMMA = 0.1
@@ -132,115 +132,6 @@ def create_dataloaders(config):
     )
     
     return train_loader, val_loader
-
-
-# ============================================================
-# 模型相关函数
-# ============================================================
-
-def build_model(model_type, config):
-    """
-    根据模型类型创建模型实例
-    
-    Args:
-        model_type: 模型类型字符串
-        config: 配置字典
-        
-    Returns:
-        nn.Module: 初始化后的模型
-    """
-    model_kwargs = {
-        'num_classes': config["num_classes"]
-    }
-    
-    if model_type == 'resnet_gru':
-        model = ResNetGRUVideoModel(
-            **model_kwargs, 
-            hidden_dim=config["hidden_dim"],
-            freeze_backbone=True
-        )
-    elif model_type == 'lightweight_tsm':
-        model = LightweightTSMModel(
-            **model_kwargs,
-            n_segment=config["num_frames"]
-        )
-    elif model_type == 'ultralight_convgru':
-        model = UltraLightConvGRUModel(
-            **model_kwargs,
-            n_segment=config["num_frames"]
-        )
-    elif model_type == 'ultralight_convgru_pooled':
-        model = UltraLightConvGRUPooledModel(
-            **model_kwargs,
-            n_segment=config["num_frames"]
-        )
-    elif model_type == 'lightweight_tsm_resnet':
-        model = LightweightTSMResNetModel(
-            **model_kwargs,
-            n_segment=config["num_frames"],
-            pretrained=True
-        )
-    elif model_type == 'ultralight_convgru_resnet':
-        model = UltraLightConvGRUResNetModel(
-            **model_kwargs,
-            n_segment=config["num_frames"],
-            pretrained=True
-        )
-    elif model_type == 'ultralight_gru':
-        model = UltraLightGRUModel(
-            **model_kwargs,
-            n_segment=config["num_frames"],
-            hidden_dim=config["hidden_dim"]
-        )
-    elif model_type == 'ultralight_me_gru':
-        model = UltraLightMEGRUModel(
-            **model_kwargs,
-            n_segment=config["num_frames"],
-            hidden_dim=config["hidden_dim"]
-        )
-    elif model_type == 'ultralight_me_lite_gru':
-        model = UltraLightMELiteGRUModel(
-            **model_kwargs,
-            n_segment=config["num_frames"],
-            hidden_dim=config["hidden_dim"]
-        )
-    elif model_type == 'ultralight_me_before_gru':
-        model = UltraLightMEBeforeGRUModel(
-            **model_kwargs,
-            n_segment=config["num_frames"],
-            hidden_dim=config["hidden_dim"]
-        )
-    elif model_type == 'ultralight_parallel_me_gru':
-        model = UltraLightParallelMEGRUModel(
-            **model_kwargs,
-            n_segment=config["num_frames"],
-            hidden_dim=config["hidden_dim"]
-        )
-    elif model_type == 'ultralight_me_lite_before_gru':
-        model = UltraLightMELiteBeforeGRUModel(
-            **model_kwargs,
-            n_segment=config["num_frames"],
-            hidden_dim=config["hidden_dim"]
-        )
-    elif model_type == 'ultralight_parallel_me_lite_gru':
-        model = UltraLightParallelMELiteGRUModel(
-            **model_kwargs,
-            n_segment=config["num_frames"],
-            hidden_dim=config["hidden_dim"]
-        )
-    elif model_type == 'ParallelMEAdd':
-        model = ParallelMEGRUAddModel(
-            **model_kwargs,
-            n_segment=config["num_frames"],
-            hidden_dim=config["hidden_dim"]
-        )
-    else:  # resnet (default)
-        model = ResNetVideoModel(
-            **model_kwargs,
-            freeze_backbone=True
-        )
-    
-    return model.to(config["device"])
 
 
 def build_optimizer(optimizer_name, model, base_lr):
@@ -632,7 +523,7 @@ def train_model():
     # ---------- 1. 初始化 ----------
     args, config = setup_training()
     train_loader, val_loader = create_dataloaders(config)
-    model = build_model(args.model_type, config)
+    model = build_model(args.model_type, config, device=config["device"])
     
     criterion = nn.CrossEntropyLoss()
     base_lr = config["learning_rate"] if config["learning_rate"] != 0 else 0.01
