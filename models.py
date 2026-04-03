@@ -14,7 +14,7 @@ modelList = ['resnet', 'resnet_gru', 'lightweight_tsm', 'ultralight_convgru',
              'ultralight_convgru_pooled', 'lightweight_tsm_resnet', 'ultralight_convgru_resnet',
              'ultralight_gru', 'ultralight_me_gru', 'ultralight_me_lite_gru',
              'ultralight_me_before_gru', 'ultralight_parallel_me_gru',
-             'ultralight_me_lite_before_gru', 'ultralight_parallel_me_lite_gru', 'me_before_3',
+             'ultralight_me_lite_before_gru', 'ultralight_parallel_me_lite_gru', 'me_before_1',
              'me_before_2', 'me_before_3', 'deeper_1', 'deeper_2']
 
 
@@ -460,7 +460,6 @@ class UltraLightMELiteGRUModel(nn.Module):
 
 # --------------------------
 # UltraLightMEBeforeGRU
-# MARK: best for now
 # TSM + ME-Before-TSM (Scheme A) + Standard GRU
 # --------------------------
 
@@ -533,7 +532,9 @@ class UltraLightMEBeforeGRUModel(nn.Module):
 
         out = self.fc(last_hidden)              # (B, num_classes)
         return out
-    
+
+
+# MARK: best for now
 class UltraLightMEBeforeGRUModel_1(nn.Module):
     def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
         super(UltraLightMEBeforeGRUModel_1, self).__init__()

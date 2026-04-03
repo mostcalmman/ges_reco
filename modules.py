@@ -29,7 +29,7 @@ import torch.nn.functional as F
 # MARK: Temporal Shift Module
 # --------------------------
 
-def temporal_shift(x, n_segment, fold_div=8):
+def temporal_shift(x, n_segment, fold_div=4): # change, 这个对应MEBefore_1_16_TSM4, 懒得解耦了
     """Temporal Shift Module (TSM) — zero-parameter temporal modeling.
 
     Shifts a fraction of channels forward/backward along the time axis to
