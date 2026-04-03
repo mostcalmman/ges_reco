@@ -102,12 +102,13 @@ def get_train_transform(img_size=(100, 176), normalize_mean=None, normalize_std=
     h = 100
     return transforms.Compose([
         transforms.Resize(h),
-        transforms.RandomAffine(
-            degrees=5,
-            translate=(0.05, 0.05),
-            scale=(0.95, 1.05),
-            fill=0
-        ),
+        # 加了仿射模型会倒退, 先不加
+        # transforms.RandomAffine(
+        #     degrees=5,
+        #     translate=(0.05, 0.05),
+        #     scale=(0.95, 1.05),
+        #     fill=0
+        # ),
         transforms.CenterCrop(h),
         transforms.ColorJitter(brightness=0.2, contrast=0.2), 
         transforms.ToTensor(),

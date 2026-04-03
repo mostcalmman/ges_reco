@@ -79,6 +79,30 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
             n_segment=num_frames,
             hidden_dim=hidden_dim,
         )
+    elif model_type == "me_before_2":
+        model = UltraLightMEBeforeGRUModel_2(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+        )
+    elif model_type == "me_before_3":
+        model = UltraLightMEBeforeGRUModel_3(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+        )
+    elif model_type == "deeper_1":
+        model = Deeper1(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+        )
+    elif model_type == "deeper_2":
+        model = Deeper2(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+        )
     elif model_type == "ultralight_parallel_me_gru":
         model = UltraLightParallelMEGRUModel(
             num_classes=num_classes,
