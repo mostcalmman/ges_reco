@@ -9,7 +9,13 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 
 from utils import get_config, get_platform_name, is_windows, is_linux, build_model
-from dataset import JesterDataset, get_train_transform, get_val_transform
+from dataset import (
+    JesterDataset,
+    SAMPLING_RANDOM,
+    SAMPLING_UNIFORM,
+    get_train_transform,
+    get_val_transform,
+)
 from models import modelList
 
 LR_MILESTONES = [10, 20, 25]
@@ -137,14 +143,16 @@ def create_dataloaders(config):
         csv_file=os.path.join(config["data_dir"], "Train.csv"),
         root_dir=os.path.join(config["data_dir"], "Train"),
         num_frames=config["num_frames"],
-        transform=train_transform
+        transform=train_transform,
+        sampling_mode=SAMPLING_RANDOM,
     )
     
     val_dataset = JesterDataset(
         csv_file=os.path.join(config["data_dir"], "Validation.csv"),
         root_dir=os.path.join(config["data_dir"], "Validation"),
         num_frames=config["num_frames"],
-        transform=val_transform
+        transform=val_transform,
+        sampling_mode=SAMPLING_UNIFORM,
     )
 
     # 创建数据加载器
@@ -502,7 +510,8 @@ def evaluate_test_set(config, model):
         root_dir=os.path.join(config["data_dir"], "Test"),
         num_frames=config["num_frames"],
         transform=val_transform,
-        is_test=False  # 设置为 False 以便验证是否有标签
+        is_test=False,  # 设置为 False 以便验证是否有标签
+        sampling_mode=SAMPLING_UNIFORM,
     )
     test_loader = DataLoader(
         test_dataset, 

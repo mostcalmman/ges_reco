@@ -5,7 +5,7 @@ from models import *
 def build_model(model_type, config, pretrained=None, freeze_backbone=None, device=None):
     """根据模型类型创建模型实例。"""
     num_classes = config.get("num_classes", 27)
-    num_frames = config.get("num_frames", 37)
+    num_frames = config.get("num_frames", 16)
     hidden_dim = config.get("hidden_dim", 128)
 
     if freeze_backbone is None:

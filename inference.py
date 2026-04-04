@@ -12,7 +12,13 @@ from torch.utils.data import DataLoader
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from utils import get_config, get_platform_name, build_model, load_model_weights
-from dataset import JesterDataset, get_val_transform
+from dataset import (
+    DEFAULT_NUM_FRAMES,
+    JesterDataset,
+    SAMPLING_UNIFORM,
+    get_val_transform,
+    sample_frame_indices,
+)
 from models import modelList
 
 
@@ -95,15 +101,14 @@ def infer_single_video(args, model, device, config):
     if os.path.exists(args.video_path):
         frame_files = sorted([f for f in os.listdir(args.video_path) if f.endswith('.jpg')])
         total_frames = len(frame_files)
-        num_frames = config["num_frames"]
+        num_frames = DEFAULT_NUM_FRAMES
         img_size = tuple(config.get("img_size", (100, 176)))
-        
-        if total_frames <= num_frames:
-            indices = np.linspace(1, total_frames, total_frames, dtype=int)
-            padding = np.ones(num_frames - total_frames, dtype=int) * total_frames
-            indices = np.concatenate((indices, padding))
-        else:
-            indices = np.linspace(1, total_frames, num_frames, dtype=int)
+
+        indices = sample_frame_indices(
+            total_frames=total_frames,
+            num_frames=num_frames,
+            sampling_mode=SAMPLING_UNIFORM,
+        )
         
         # 创建 transform
         val_transform = get_val_transform(
@@ -174,9 +179,10 @@ def infer_dataset(args, model, device, config):
     test_dataset = JesterDataset(
         csv_file=args.csv_path,
         root_dir=args.root_dir,
-        num_frames=config["num_frames"],
+        num_frames=DEFAULT_NUM_FRAMES,
         transform=val_transform,
-        is_test=False 
+        is_test=False,
+        sampling_mode=SAMPLING_UNIFORM,
     )
     
     # 使用 config 中的 batch_size（如果未指定）
@@ -283,6 +289,7 @@ def run_inference():
     
     # 加载配置
     config = get_config()
+    config["num_frames"] = DEFAULT_NUM_FRAMES
     device = config["device"]
     
     # 打印平台信息

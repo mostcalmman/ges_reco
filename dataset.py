@@ -9,43 +9,74 @@ import torchvision.transforms as transforms
 from utils import get_config
 
 
-# --------------------------
-# 数据集加载器 (Dataset)
-# --------------------------
-class JesterDataset(Dataset):
-    def __init__(self, csv_file, root_dir, num_frames=37, transform=None, is_test=False):
-        self.data_info = pd.read_csv(csv_file)
-        self.root_dir = root_dir
-        self.num_frames = num_frames
-        self.transform = transform
-        self.is_test = is_test
+DEFAULT_NUM_FRAMES = 16
+SAMPLING_RANDOM = "random"
+SAMPLING_UNIFORM = "uniform"
 
-    def __len__(self):
-        return len(self.data_info)
 
-    def _sample_indices(self, total_frames):
-        # 处理视频长度和模型要求不一致的情况, 返回一个长度为 num_frames 的索引列表
-        if total_frames <= 0:
-            return np.ones(self.num_frames, dtype=int)
+def sample_frame_indices(total_frames, num_frames=DEFAULT_NUM_FRAMES, sampling_mode=SAMPLING_UNIFORM):
+    """根据采样策略返回长度为 num_frames 的 1-based 帧索引。"""
+    if total_frames <= 0:
+        return np.ones(num_frames, dtype=int)
 
-        if total_frames <= self.num_frames:
-            indices = np.linspace(1, total_frames, total_frames, dtype=int)
-            padding = np.ones(self.num_frames - total_frames, dtype=int) * total_frames
-            indices = np.concatenate((indices, padding))
-            return indices
+    if total_frames <= num_frames:
+        indices = np.linspace(1, total_frames, total_frames, dtype=int)
+        padding = np.ones(num_frames - total_frames, dtype=int) * total_frames
+        return np.concatenate((indices, padding))
 
-        boundaries = np.linspace(0, total_frames, self.num_frames + 1, dtype=int)
+    if sampling_mode == SAMPLING_RANDOM:
+        boundaries = np.linspace(0, total_frames, num_frames + 1, dtype=int)
         sampled = []
-        for i in range(self.num_frames):
+        for i in range(num_frames):
             start = boundaries[i]
             end = boundaries[i + 1]
             if end <= start:
                 chosen = start
             else:
                 chosen = np.random.randint(start, end)
-            sampled.append(chosen + 1)  # 转成 1-based 帧编号
-
+            sampled.append(chosen + 1)
         return np.array(sampled, dtype=int)
+
+    if sampling_mode == SAMPLING_UNIFORM:
+        return np.linspace(1, total_frames, num_frames, dtype=int)
+
+    raise ValueError(f"不支持的采样策略: {sampling_mode}")
+
+
+# --------------------------
+# 数据集加载器 (Dataset)
+# --------------------------
+class JesterDataset(Dataset):
+    def __init__(
+        self,
+        csv_file,
+        root_dir,
+        num_frames=DEFAULT_NUM_FRAMES,
+        transform=None,
+        is_test=False,
+        sampling_mode=None,
+    ):
+        self.data_info = pd.read_csv(csv_file)
+        self.root_dir = root_dir
+        self.num_frames = num_frames
+        self.transform = transform
+        self.is_test = is_test
+
+        # 兼容历史参数：未指定 sampling_mode 时，is_test=True 使用均匀采样，否则随机采样。
+        if sampling_mode is None:
+            self.sampling_mode = SAMPLING_UNIFORM if is_test else SAMPLING_RANDOM
+        else:
+            self.sampling_mode = sampling_mode
+
+    def __len__(self):
+        return len(self.data_info)
+
+    def _sample_indices(self, total_frames):
+        return sample_frame_indices(
+            total_frames=total_frames,
+            num_frames=self.num_frames,
+            sampling_mode=self.sampling_mode,
+        )
 
     def __getitem__(self, idx):
         row = self.data_info.iloc[idx]
