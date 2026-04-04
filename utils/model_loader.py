@@ -27,28 +27,6 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
             num_classes=num_classes,
             n_segment=num_frames,
         )
-    elif model_type == "ultralight_convgru":
-        model = UltraLightConvGRUModel(
-            num_classes=num_classes,
-            n_segment=num_frames,
-        )
-    elif model_type == "ultralight_convgru_pooled":
-        model = UltraLightConvGRUPooledModel(
-            num_classes=num_classes,
-            n_segment=num_frames,
-        )
-    elif model_type == "lightweight_tsm_resnet":
-        model = LightweightTSMResNetModel(
-            num_classes=num_classes,
-            n_segment=num_frames,
-            pretrained=True if pretrained is None else pretrained,
-        )
-    elif model_type == "ultralight_convgru_resnet":
-        model = UltraLightConvGRUResNetModel(
-            num_classes=num_classes,
-            n_segment=num_frames,
-            pretrained=True if pretrained is None else pretrained,
-        )
     elif model_type == "ultralight_gru":
         model = UltraLightGRUModel(
             num_classes=num_classes,
@@ -91,14 +69,14 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
             n_segment=num_frames,
             hidden_dim=hidden_dim,
         )
-    elif model_type == "deeper_1":
-        model = Deeper1(
+    elif model_type == "deeper":
+        model = Deeper(
             num_classes=num_classes,
             n_segment=num_frames,
             hidden_dim=hidden_dim,
         )
-    elif model_type == "deeper_2":
-        model = Deeper2(
+    elif model_type == "spatial_attention_1":
+        model = UltraLightMEBeforeGRUModel_1_SpatialAttention(
             num_classes=num_classes,
             n_segment=num_frames,
             hidden_dim=hidden_dim,

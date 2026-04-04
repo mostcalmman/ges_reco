@@ -29,7 +29,7 @@ import torch.nn.functional as F
 # MARK: Temporal Shift Module
 # --------------------------
 
-def temporal_shift(x, n_segment, fold_div=4): # change, 这个对应MEBefore_1_16_TSM4, 懒得解耦了
+def temporal_shift(x, n_segment, fold_div=8): # change, fold_div=4作用不大, 这个对应MEBefore_1_16_TSM4, 懒得解耦了
     """Temporal Shift Module (TSM) — zero-parameter temporal modeling.
 
     Shifts a fraction of channels forward/backward along the time axis to
@@ -904,3 +904,21 @@ class TSMMELiteResBlock(nn.Module):
         out += identity
         out = F.relu(out)
         return out  # (B*T, C_out, H_out, W_out)
+
+
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super(SpatialAttention, self).__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size=kernel_size, padding=kernel_size//2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        # x: (B*T, C, H, W)
+        max_out, _ = torch.max(x, dim=1, keepdim=True) # (B*T, 1, H, W)
+        avg_out = torch.mean(x, dim=1, keepdim=True)   # (B*T, 1, H, W)
+        
+        # 拼接并计算空间掩码
+        y = torch.cat([max_out, avg_out], dim=1)       # (B*T, 2, H, W)
+        y = self.conv(y)                               # (B*T, 1, H, W)
+        
+        return x * self.sigmoid(y)
