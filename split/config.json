@@ -1,0 +1,35 @@
+{
+    "_comment": "Standalone config for UltraLightParallelMEGRUModel in split/",
+    "common": {
+        "model_type": "ultralight_parallel_me_gru",
+        "data_dir": "../dataset",
+        "checkpoint_dir": "../checkpoint/split_ultralight_parallel_me_gru",
+        "num_frames": 16,
+        "img_size": [100, 176],
+        "num_classes": 27,
+        "hidden_dim": 256,
+        "learning_rate": 0.001,
+        "weight_decay": 0.001,
+        "optimizer": "adamw",
+        "num_epochs": 20,
+        "batch_size": 64,
+        "num_workers": 8,
+        "pin_memory": true,
+        "prefetch_factor": 4,
+        "save_every": 10,
+        "normalize_mean": [0.485, 0.456, 0.406],
+        "normalize_std": [0.229, 0.224, 0.225]
+    },
+    "windows": {
+        "batch_size": 16,
+        "num_workers": 4,
+        "pin_memory": false,
+        "prefetch_factor": 2
+    },
+    "linux": {
+        "batch_size": 64,
+        "num_workers": 8,
+        "pin_memory": true,
+        "prefetch_factor": 4
+    }
+}
