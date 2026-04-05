@@ -757,7 +757,8 @@ class Deeper(nn.Module):
 
 # --------------------------
 # UltraLightParallelMEGRU
-# TSM + Parallel ME/TSM (Scheme B) + Standard GRU
+# TSM + Parallel ME/TSM + Standard GRU
+# MARK: 发表
 # --------------------------
 
 class UltraLightParallelMEGRUModel(nn.Module):
@@ -784,6 +785,7 @@ class UltraLightParallelMEGRUModel(nn.Module):
         super(UltraLightParallelMEGRUModel, self).__init__()
         self.n_segment = n_segment
         self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(0.5)
 
         self.conv1 = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
@@ -827,6 +829,7 @@ class UltraLightParallelMEGRUModel(nn.Module):
         rnn_out, hidden = self.gru(x)           # hidden: (1, B, hidden_dim)
         last_hidden = hidden[-1]                # (B, hidden_dim)
 
+        last_hidden = self.dropout(last_hidden)
         out = self.fc(last_hidden)              # (B, num_classes)
         return out
 

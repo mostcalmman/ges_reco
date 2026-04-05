@@ -322,4 +322,6 @@ if __name__ == "__main__":
 # python inference.py --video_path "dataset/Test/100010" --model_type "resnet" --model_weight "checkpoint/lightweight_gesture_model.pth" --output "checkpoint/single_run"
 
 # 执行整个测试集推断（自动计算 Top-1 / Top-5）:
-# python inference.py --csv_path "dataset/Test.csv" --root_dir "dataset/Test" --model_type "resnet" --model_weight "checkpoint/lightweight_gesture_model.pth" --output "checkpoint/test_run"
+# python inference.py --csv_path dataset/Test.csv --root_dir dataset/Test --model_type ultralight_parallel_me_gru --model_weight checkpoint/final_2/model_ultralight_parallel_me_gru.pth --output results/final_2/test
+# python inference.py --csv_path dataset/Train.csv --root_dir dataset/Train --model_type ultralight_parallel_me_gru --model_weight checkpoint/final_2/model_ultralight_parallel_me_gru.pth --output results/final_2/train
+# python inference.py --csv_path dataset/Validation.csv --root_dir dataset/Validation --model_type ultralight_parallel_me_gru --model_weight checkpoint/final_2/model_ultralight_parallel_me_gru.pth --output results/final_2/val

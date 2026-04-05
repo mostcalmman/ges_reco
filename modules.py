@@ -456,7 +456,8 @@ class ParallelMETSMResBlock(nn.Module):
             Tensor of shape (B*T, C, 1, 1) with values in [0, 1].
         """
         if self.n_segment <= 1:
-            return torch.ones_like(x)[:, :, :1, :1]
+            # Keep fusion as identity when there is no temporal axis.
+            return torch.zeros_like(x)[:, :, :1, :1]
 
         nt, c, h, w = x.size()
         n_batch = nt // self.n_segment
@@ -496,7 +497,7 @@ class ParallelMETSMResBlock(nn.Module):
         # Parallel ME + TSM fusion
         me_weight = self._get_me_attention(x)  # (B*T, C, 1, 1)
         shifted = temporal_shift(x, self.n_segment)
-        out = shifted * me_weight + shifted  # broadcasting: (B*T,C,H,W) * (B*T,C,1,1)
+        out = x * me_weight + shifted  # broadcasting: (B*T,C,H,W) * (B*T,C,1,1)
 
         # Conv layers
         out = F.relu(self.bn1(self.conv1(out)))
