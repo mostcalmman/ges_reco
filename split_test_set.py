@@ -1,66 +1,99 @@
-import os
-import pandas as pd
-import shutil
 import argparse
+import os
+import shutil
+
+import pandas as pd
 from tqdm import tqdm
 
-def split_test_set(data_dir="dataset", sample_size=5000):
-    train_csv_path = os.path.join(data_dir, "Train.csv")
-    test_csv_path = os.path.join(data_dir, "Test.csv")
-    train_dir = os.path.join(data_dir, "Train")
-    test_dir = os.path.join(data_dir, "Test")
 
-    print(f"Reading train csv: {train_csv_path}")
-    df = pd.read_csv(train_csv_path)
-    
-    if len(df) <= sample_size:
-        print(f"Error: Train set only has {len(df)} samples, cannot extract {sample_size}!")
-        return
+def _sample_from_split(data_dir, split_name, sample_size, seed):
+    csv_path = os.path.join(data_dir, f"{split_name}.csv")
+    split_dir = os.path.join(data_dir, split_name)
 
-    # 随机抽取样本
-    print(f"Sampling {sample_size} from {len(df)} records for the new test set...")
-    test_df = df.sample(n=sample_size, random_state=42)
-    # 从原训练集中剔除抽取的样本
-    train_df = df.drop(test_df.index)
+    print(f"Reading {split_name} csv: {csv_path}")
+    df = pd.read_csv(csv_path)
 
-    print(f"Sampling finished: ")
-    print(f"   - Original Train count: {len(df)}")
-    print(f"   - New Train count: {len(train_df)}")
-    print(f"   - New Test count: {len(test_df)}")
+    if len(df) < sample_size:
+        raise ValueError(
+            f"{split_name} set only has {len(df)} samples, cannot extract {sample_size}."
+        )
 
-    # 创建 Test 目录
-    os.makedirs(test_dir, exist_ok=True)
+    sampled_df = df.sample(n=sample_size, random_state=seed).copy()
+    sampled_df["source_split"] = split_name
+    sampled_df["source_video_id"] = sampled_df["video_id"]
 
-    print(f"Moving {sample_size} folders from Train to Test...")
-    moved_count = 0
+    return sampled_df, split_dir
+
+
+def build_final_set(data_dir="dataset", sample_size=5000, seed=42):
+    """从 Train/Test/Validation 各抽样 sample_size，复制到 Final，不改动原数据。"""
+    final_split_name = "Final"
+    final_dir = os.path.join(data_dir, final_split_name)
+    final_csv_path = os.path.join(data_dir, f"{final_split_name}.csv")
+
+    os.makedirs(final_dir, exist_ok=True)
+
+    sampled_train, train_dir = _sample_from_split(data_dir, "Train", sample_size, seed)
+    sampled_test, test_dir = _sample_from_split(data_dir, "Test", sample_size, seed)
+    sampled_val, val_dir = _sample_from_split(data_dir, "Validation", sample_size, seed)
+
+    final_df = pd.concat([sampled_train, sampled_test, sampled_val], ignore_index=True)
+
+    print("\nSampling finished:")
+    print(f"  - Train sampled: {len(sampled_train)}")
+    print(f"  - Test sampled: {len(sampled_test)}")
+    print(f"  - Validation sampled: {len(sampled_val)}")
+    print(f"  - Final total: {len(final_df)}")
+
+    copied_count = 0
     missing_count = 0
-    
-    # 转换为字典列表以提高遍历速度
-    test_records = test_df.to_dict('records')
-    
-    for row in tqdm(test_records, desc="Moving folders"):
-        video_id = str(row['video_id'])
-        src_path = os.path.join(train_dir, video_id)
-        dst_path = os.path.join(test_dir, video_id)
-        
+
+    records = final_df.to_dict("records")
+    for row in tqdm(records, desc="Copying folders to Final"):
+        split_name = str(row["source_split"])
+        video_id = str(row["video_id"])
+
+        if split_name == "Train":
+            src_root = train_dir
+        elif split_name == "Test":
+            src_root = test_dir
+        else:
+            src_root = val_dir
+
+        src_path = os.path.join(src_root, video_id)
+
+        # 使用前缀避免不同 split 下同名 video_id 的潜在冲突
+        final_video_id = f"{split_name}_{video_id}"
+        dst_path = os.path.join(final_dir, final_video_id)
+
         if os.path.exists(src_path):
-            shutil.move(src_path, dst_path)
-            moved_count += 1
+            if os.path.exists(dst_path):
+                shutil.rmtree(dst_path)
+            shutil.copytree(src_path, dst_path)
+            copied_count += 1
+            row["video_id"] = final_video_id
         else:
             missing_count += 1
 
-    print(f"\nMove completed! Success: {moved_count}, Missing: {missing_count}")
+    print(f"\nCopy completed! Success: {copied_count}, Missing: {missing_count}")
 
-    print("Saving updated CSV files...")
-    # 保存新的 Test.csv 和更新后的 Train.csv
-    test_df.to_csv(test_csv_path, index=False)
-    train_df.to_csv(train_csv_path, index=False)
-    print(f"CSV files saved!\n- New Test: {test_csv_path}\n- New Train: {train_csv_path}")
+    # records 里 video_id 可能已被改为 final_video_id，重新构建 DataFrame
+    out_df = pd.DataFrame(records)
+    out_df.to_csv(final_csv_path, index=False)
+
+    print("Final set generated successfully!")
+    print(f"  - Final dir: {final_dir}")
+    print(f"  - Final csv: {final_csv_path}")
+    print("  - Original Train/Test/Validation data are NOT removed.")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="从训练集中随机抽取生成测试集")
+    parser = argparse.ArgumentParser(
+        description="从 Train/Test/Validation 各抽取样本生成 1:1:1 的 Final 集（仅复制，不删除原数据）"
+    )
     parser.add_argument("--data_dir", type=str, default="dataset", help="数据集根目录")
-    parser.add_argument("--sample_size", type=int, default=5000, help="抽取的测试集样本数")
+    parser.add_argument("--sample_size", type=int, default=5000, help="每个 split 抽取样本数")
+    parser.add_argument("--seed", type=int, default=42, help="随机种子")
     args = parser.parse_args()
-    
-    split_test_set(args.data_dir, args.sample_size)
+
+    build_final_set(args.data_dir, args.sample_size, args.seed)

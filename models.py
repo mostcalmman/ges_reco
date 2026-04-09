@@ -14,7 +14,8 @@ modelList = ['resnet', 'resnet_gru', 'lightweight_tsm',
              'ultralight_gru', 'ultralight_me_gru', 'ultralight_me_lite_gru',
              'ultralight_me_before_gru', 'ultralight_parallel_me_gru',
              'ultralight_me_lite_before_gru', 'ultralight_parallel_me_lite_gru', 'me_before_1',
-             'me_before_2', 'me_before_3', 'deeper', 'spatial_attention_1']
+             'me_before_2', 'me_before_3', 'deeper', 'spatial_attention_1', 'tmf1', 'tmf2', 'tmf123',
+             'ab1', 'ab2', 'ab3']
 
 
 # --------------------------
@@ -814,6 +815,292 @@ class UltraLightParallelMEGRUModel(nn.Module):
         Returns:
             (B, num_classes) classification logits.
         """
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
+        x = self.conv1(x)                       # (B*T, 32, H/2, W/2)
+        x = self.layer1(x)                      # (B*T, 32, H/2, W/2)
+        x = self.layer2(x)                      # (B*T, 64, H/4, W/4)
+        x = self.layer3(x)                      # (B*T, 128, H/8, W/8)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))    # (B*T, 128, 1, 1)
+        x = x.view(b, t, -1)                    # (B, T, 128)
+
+        # GRU temporal aggregation
+        rnn_out, hidden = self.gru(x)           # hidden: (1, B, hidden_dim)
+        last_hidden = hidden[-1]                # (B, hidden_dim)
+
+        last_hidden = self.dropout(last_hidden)
+        out = self.fc(last_hidden)              # (B, num_classes)
+        return out
+    
+
+class TMF1(nn.Module):
+    """
+    消融实验
+    """
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
+        super(TMF1, self).__init__()
+        self.n_segment = n_segment
+        self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(0.5)
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.layer1 = ParallelMETSMResBlock(32, 32, stride=1, n_segment=n_segment, reduction=2)
+        self.layer2 = TSMResBlock(32, 64, stride=2, n_segment=n_segment)
+        self.layer3 = TSMResBlock(64, 128, stride=2, n_segment=n_segment)
+
+        # GRU input: AdaptiveAvgPool2d(1,1) collapses spatial dims to 128-d vector per frame
+        self.gru = nn.GRU(
+            input_size=128,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
+        x = self.conv1(x)                       # (B*T, 32, H/2, W/2)
+        x = self.layer1(x)                      # (B*T, 32, H/2, W/2)
+        x = self.layer2(x)                      # (B*T, 64, H/4, W/4)
+        x = self.layer3(x)                      # (B*T, 128, H/8, W/8)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))    # (B*T, 128, 1, 1)
+        x = x.view(b, t, -1)                    # (B, T, 128)
+
+        # GRU temporal aggregation
+        rnn_out, hidden = self.gru(x)           # hidden: (1, B, hidden_dim)
+        last_hidden = hidden[-1]                # (B, hidden_dim)
+
+        last_hidden = self.dropout(last_hidden)
+        out = self.fc(last_hidden)              # (B, num_classes)
+        return out
+    
+
+class TMF2(nn.Module):
+    """
+    消融实验
+    """
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
+        super(TMF2, self).__init__()
+        self.n_segment = n_segment
+        self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(0.5)
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.layer1 = TSMResBlock(32, 32, stride=1, n_segment=n_segment)
+        self.layer2 = ParallelMETSMResBlock(32, 64, stride=2, n_segment=n_segment, reduction=2)
+        self.layer3 = TSMResBlock(64, 128, stride=2, n_segment=n_segment)
+
+        # GRU input: AdaptiveAvgPool2d(1,1) collapses spatial dims to 128-d vector per frame
+        self.gru = nn.GRU(
+            input_size=128,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
+        x = self.conv1(x)                       # (B*T, 32, H/2, W/2)
+        x = self.layer1(x)                      # (B*T, 32, H/2, W/2)
+        x = self.layer2(x)                      # (B*T, 64, H/4, W/4)
+        x = self.layer3(x)                      # (B*T, 128, H/8, W/8)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))    # (B*T, 128, 1, 1)
+        x = x.view(b, t, -1)                    # (B, T, 128)
+
+        # GRU temporal aggregation
+        rnn_out, hidden = self.gru(x)           # hidden: (1, B, hidden_dim)
+        last_hidden = hidden[-1]                # (B, hidden_dim)
+
+        last_hidden = self.dropout(last_hidden)
+        out = self.fc(last_hidden)              # (B, num_classes)
+        return out
+    
+
+class TMF123(nn.Module):
+    """
+    消融实验
+    """
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
+        super(TMF123, self).__init__()
+        self.n_segment = n_segment
+        self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(0.5)
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.layer1 = ParallelMETSMResBlock(32, 32, stride=1, n_segment=n_segment, reduction=2)
+        self.layer2 = ParallelMETSMResBlock(32, 64, stride=2, n_segment=n_segment, reduction=2)
+        self.layer3 = ParallelMETSMResBlock(64, 128, stride=2, n_segment=n_segment, reduction=4)
+
+        # GRU input: AdaptiveAvgPool2d(1,1) collapses spatial dims to 128-d vector per frame
+        self.gru = nn.GRU(
+            input_size=128,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
+        x = self.conv1(x)                       # (B*T, 32, H/2, W/2)
+        x = self.layer1(x)                      # (B*T, 32, H/2, W/2)
+        x = self.layer2(x)                      # (B*T, 64, H/4, W/4)
+        x = self.layer3(x)                      # (B*T, 128, H/8, W/8)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))    # (B*T, 128, 1, 1)
+        x = x.view(b, t, -1)                    # (B, T, 128)
+
+        # GRU temporal aggregation
+        rnn_out, hidden = self.gru(x)           # hidden: (1, B, hidden_dim)
+        last_hidden = hidden[-1]                # (B, hidden_dim)
+
+        last_hidden = self.dropout(last_hidden)
+        out = self.fc(last_hidden)              # (B, num_classes)
+        return out
+    
+
+class ab1(nn.Module):
+    """
+    消融实验, 只留ResNetLight
+    """
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
+        super(ab1, self).__init__()
+        self.n_segment = n_segment
+        self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(0.5)
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.layer1 = TSMResBlock(32, 32, stride=1, n_segment=n_segment)
+        self.layer2 = TSMResBlock(32, 64, stride=2, n_segment=n_segment)
+        self.layer3 = TSMResBlock(64, 128, stride=2, n_segment=n_segment)
+
+        self.fc = nn.Linear(128, num_classes)
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
+        x = self.conv1(x)                       # (B*T, 32, H/2, W/2)
+        x = self.layer1(x)                      # (B*T, 32, H/2, W/2)
+        x = self.layer2(x)                      # (B*T, 64, H/4, W/4)
+        x = self.layer3(x)                      # (B*T, 128, H/8, W/8)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))    # (B*T, 128, 1, 1)
+        x = x.view(b, t, -1)                    # (B, T, 128)
+
+        x = x.mean(dim=1)                       # (B, 128)
+
+        x = self.dropout(x)
+        out = self.fc(x)                        # (B, num_classes)
+        return out
+
+
+class ab2(nn.Module):
+    """
+    消融实验, 只留ResNetLight + TMF
+    """
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
+        super(ab2, self).__init__()
+        self.n_segment = n_segment
+        self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(0.5)
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.layer1 = TSMResBlock(32, 32, stride=1, n_segment=n_segment)
+        self.layer2 = TSMResBlock(32, 64, stride=2, n_segment=n_segment)
+        self.layer3 = ParallelMETSMResBlock(64, 128, stride=2, n_segment=n_segment, reduction=4)
+
+        self.fc = nn.Linear(128, num_classes)
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
+        x = self.conv1(x)                       # (B*T, 32, H/2, W/2)
+        x = self.layer1(x)                      # (B*T, 32, H/2, W/2)
+        x = self.layer2(x)                      # (B*T, 64, H/4, W/4)
+        x = self.layer3(x)                      # (B*T, 128, H/8, W/8)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))    # (B*T, 128, 1, 1)
+        x = x.view(b, t, -1)                    # (B, T, 128)
+
+        x = x.mean(dim=1)                       # (B, 128)
+
+        x = self.dropout(x)
+        out = self.fc(x)                        # (B, num_classes)
+        return out
+
+
+class ab3(nn.Module):
+    """
+    消融实验, 只留ResNetLight + GRU
+    """
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
+        super(ab3, self).__init__()
+        self.n_segment = n_segment
+        self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(0.5)
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.layer1 = TSMResBlock(32, 32, stride=1, n_segment=n_segment)
+        self.layer2 = TSMResBlock(32, 64, stride=2, n_segment=n_segment)
+        self.layer3 = TSMResBlock(64, 128, stride=2, n_segment=n_segment)
+
+        # GRU input: AdaptiveAvgPool2d(1,1) collapses spatial dims to 128-d vector per frame
+        self.gru = nn.GRU(
+            input_size=128,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x):
         b, t, c, h, w = x.size()
 
         x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
