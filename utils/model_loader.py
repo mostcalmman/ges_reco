@@ -11,107 +11,41 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
     if freeze_backbone is None:
         freeze_backbone = True
 
-    if model_type == "resnet_gru":
-        model = ResNetGRUVideoModel(
-            num_classes=num_classes,
-            hidden_dim=hidden_dim,
-            freeze_backbone=freeze_backbone,
-        )
-    elif model_type == "resnet":
-        model = ResNetVideoModel(
+    if model_type == "ResNet18":
+        model = ResNet18(
             num_classes=num_classes,
             freeze_backbone=freeze_backbone,
         )
-    elif model_type == "lightweight_tsm":
-        model = LightweightTSMModel(
+    elif model_type == "LightTSM":
+        model = LightTSM(
             num_classes=num_classes,
             n_segment=num_frames,
         )
-    elif model_type == "ultralight_gru":
-        model = UltraLightGRUModel(
-            num_classes=num_classes,
-            n_segment=num_frames,
-            hidden_dim=hidden_dim,
-        )
-    elif model_type == "ultralight_me_gru":
-        model = UltraLightMEGRUModel(
+    elif model_type == "LightTSMGRU":
+        model = LightTSMGRU(
             num_classes=num_classes,
             n_segment=num_frames,
             hidden_dim=hidden_dim,
         )
-    elif model_type == "ultralight_me_lite_gru":
-        model = UltraLightMELiteGRUModel(
+    elif model_type == "LightTMFGRU":
+        model = LightTMFGRU(
             num_classes=num_classes,
             n_segment=num_frames,
             hidden_dim=hidden_dim,
         )
-    elif model_type == "ultralight_me_before_gru":
-        model = UltraLightMEBeforeGRUModel(
-            num_classes=num_classes,
-            n_segment=num_frames,
-            hidden_dim=hidden_dim,
-        )
-    elif model_type == "me_before_1":
-        model = UltraLightMEBeforeGRUModel_1(
-            num_classes=num_classes,
-            n_segment=num_frames,
-            hidden_dim=hidden_dim,
-        )
-    elif model_type == "me_before_2":
-        model = UltraLightMEBeforeGRUModel_2(
-            num_classes=num_classes,
-            n_segment=num_frames,
-            hidden_dim=hidden_dim,
-        )
-    elif model_type == "me_before_3":
-        model = UltraLightMEBeforeGRUModel_3(
-            num_classes=num_classes,
-            n_segment=num_frames,
-            hidden_dim=hidden_dim,
-        )
-    elif model_type == "deeper":
-        model = Deeper(
-            num_classes=num_classes,
-            n_segment=num_frames,
-            hidden_dim=hidden_dim,
-        )
-    elif model_type == "spatial_attention_1":
-        model = UltraLightMEBeforeGRUModel_1_SpatialAttention(
-            num_classes=num_classes,
-            n_segment=num_frames,
-            hidden_dim=hidden_dim,
-        )
-    elif model_type == "ultralight_parallel_me_gru":
-        model = UltraLightParallelMEGRUModel(
-            num_classes=num_classes,
-            n_segment=num_frames,
-            hidden_dim=hidden_dim,
-        )
-    elif model_type == "ultralight_me_lite_before_gru":
-        model = UltraLightMELiteBeforeGRUModel(
-            num_classes=num_classes,
-            n_segment=num_frames,
-            hidden_dim=hidden_dim,
-        )
-    elif model_type == "ultralight_parallel_me_lite_gru":
-        model = UltraLightParallelMELiteGRUModel(
-            num_classes=num_classes,
-            n_segment=num_frames,
-            hidden_dim=hidden_dim,
-        )
-    elif model_type == "tmf1":
+    elif model_type == "TMF1":
         model = TMF1(
             num_classes=num_classes,
             n_segment=num_frames,
             hidden_dim=hidden_dim,
         )
-    elif model_type == "tmf2":
+    elif model_type == "TMF2":
         model = TMF2(
             num_classes=num_classes,
             n_segment=num_frames,
             hidden_dim=hidden_dim,
         )
-    elif model_type == "tmf123":
+    elif model_type == "TMF123":
         model = TMF123(
             num_classes=num_classes,
             n_segment=num_frames,
