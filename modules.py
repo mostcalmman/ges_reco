@@ -29,7 +29,7 @@ import torch.nn.functional as F
 # MARK: Temporal Shift Module
 # --------------------------
 
-def temporal_shift(x, n_segment, fold_div=8): # change, fold_div=4作用不大, 这个对应MEBefore_1_16_TSM4, 懒得解耦了
+def temporal_shift(x, n_segment, fold_div=8):
     """Temporal Shift Module (TSM) — zero-parameter temporal modeling.
 
     Shifts a fraction of channels forward/backward along the time axis to
@@ -428,6 +428,134 @@ class TMFResBlock(nn.Module):
         me_weight = self._get_me_attention(x)  # (B*T, C, 1, 1)
         shifted = temporal_shift(x, self.n_segment)
         out = x * me_weight + shifted  # broadcasting: (B*T,C,H,W) * (B*T,C,1,1)
+
+        # Conv layers
+        out = F.relu(self.bn1(self.conv1(out)))
+        out = self.bn2(self.conv2(out))
+
+        out += identity
+        out = F.relu(out)
+        return out  # (B*T, C_out, H_out, W_out)
+    
+
+class TMF2ResBlock(nn.Module):
+    """
+     MultiFrame Spatial ME + TSM 并联融合的残差块。
+
+     核心改动：
+     1) 差分 D 由两部分组成（各占 reduced_channels 的一半）：
+         - 短程: conv(X_t) - X_{t-1}
+         - 长程: conv(X_{t+1}) - X_{t-1}
+     2) D 进入双分支：
+         - Channel Path: GAP -> 1x1 expand -> sigmoid -> (B*T, C, 1, 1)
+         - Spatial Path: 通道均值 -> 7x7 conv -> sigmoid -> (B*T, 1, H, W)
+     3) 融合：x * channel_weight * spatial_weight + temporal_shift(x)
+
+    """
+    def __init__(self, in_channels, out_channels, stride=1, n_segment=8, reduction=4):
+        super(TMF2ResBlock, self).__init__()
+        self.n_segment = n_segment
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # Projection shortcut when dimensions change
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+        # Multi-Frame Motion Excitation
+        reduced_channels = in_channels // reduction
+        self.short_channels = reduced_channels // 2
+        self.long_channels = reduced_channels - self.short_channels
+
+        self.squeeze = nn.Conv2d(in_channels, reduced_channels, kernel_size=1, bias=False)
+        self.me_bn = nn.BatchNorm2d(reduced_channels)
+        self.me_conv = nn.Conv2d(reduced_channels, reduced_channels, kernel_size=3,
+                                  padding=1, groups=reduced_channels, bias=False)  # depthwise
+
+        # Channel path
+        self.expand = nn.Conv2d(reduced_channels, in_channels, kernel_size=1, bias=False)
+        self.channel_sigmoid = nn.Sigmoid()
+
+        # Spatial path: single-channel map -> 7x7 conv -> sigmoid
+        self.spatial_conv = nn.Conv2d(1, 1, kernel_size=7, padding=3, bias=False)
+        self.spatial_sigmoid = nn.Sigmoid()
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+
+    def _get_me_attention(self, x):
+        """Extract channel and spatial attention from multi-frame motion diff.
+
+        Returns:
+            channel_weight: (B*T, C, 1, 1), values in [0, 1]
+            spatial_weight: (B*T, 1, H, W), values in [0, 1]
+        """
+        if self.n_segment <= 1:
+            # Keep fusion as identity when there is no temporal axis.
+            nt, c, h, w = x.size()
+            channel_weight = torch.zeros(nt, c, 1, 1, device=x.device, dtype=x.dtype)
+            spatial_weight = torch.zeros(nt, 1, h, w, device=x.device, dtype=x.dtype)
+            return channel_weight, spatial_weight
+
+        nt, c, h, w = x.size()
+        n_batch = nt // self.n_segment
+
+        # Squeeze
+        x3 = self.squeeze(x)  # (B*T, C/r, H, W)
+        x3 = self.me_bn(x3)
+
+        # Reshape for temporal operations
+        x3 = x3.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
+
+        # Conv on temporal sequence
+        x3_reshaped = x3.view(nt, -1, h, w)  # (B*T, C/r, H, W)
+        x3_conv = self.me_conv(x3_reshaped)
+        x3_conv = x3_conv.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
+
+        # Split channels: short/long each takes half reduced channels.
+        d_short = x3.new_zeros(n_batch, self.n_segment, self.short_channels, h, w)
+        if self.short_channels > 0 and self.n_segment > 1:
+            # 短程: conv(X_t) - X_{t-1}; t=0 置零
+            d_short[:, 1:] = x3_conv[:, 1:, :self.short_channels] - x3[:, :-1, :self.short_channels]
+
+        d_long = x3.new_zeros(n_batch, self.n_segment, self.long_channels, h, w)
+        if self.long_channels > 0 and self.n_segment > 2:
+            # 长程: conv(X_{t+1}) - X_{t-1}; t=0 和 t=T-1 置零
+            d_long[:, 1:-1] = x3_conv[:, 2:, self.short_channels:] - x3[:, :-2, self.short_channels:]
+
+        d = torch.cat([d_short, d_long], dim=2)  # (B, T, C/r, H, W)
+
+        # Channel Path
+        d_channel = d.view(nt, -1, h, w)  # (B*T, C/r, H, W)
+        channel_weight = self.avg_pool(d_channel)  # (B*T, C/r, 1, 1)
+        channel_weight = self.expand(channel_weight)  # (B*T, C, 1, 1)
+        channel_weight = self.channel_sigmoid(channel_weight)
+
+        # Spatial Path
+        d_spatial = d.mean(dim=2, keepdim=True)  # (B, T, 1, H, W)
+        d_spatial = d_spatial.view(nt, 1, h, w)  # (B*T, 1, H, W)
+        spatial_weight = self.spatial_conv(d_spatial)
+        spatial_weight = self.spatial_sigmoid(spatial_weight)
+
+        return channel_weight, spatial_weight
+
+    def forward(self, x):
+        # x: (B*T, C, H, W)
+        identity = self.shortcut(x)
+
+        # Parallel MultiFrame Spatial ME + TSM fusion
+        channel_weight, spatial_weight = self._get_me_attention(x)
+        shifted = temporal_shift(x, self.n_segment)
+        out = x * channel_weight * spatial_weight + shifted
 
         # Conv layers
         out = F.relu(self.bn1(self.conv1(out)))

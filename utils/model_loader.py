@@ -33,20 +33,26 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
             n_segment=num_frames,
             hidden_dim=hidden_dim,
         )
-    elif model_type == "TMF1":
-        model = TMF1(
+    elif model_type == "LightTMF2GRU":
+        model = LightTMF2GRU(
             num_classes=num_classes,
             n_segment=num_frames,
             hidden_dim=hidden_dim,
         )
-    elif model_type == "TMF2":
-        model = TMF2(
+    elif model_type == "TMFin1":
+        model = TMFin1(
             num_classes=num_classes,
             n_segment=num_frames,
             hidden_dim=hidden_dim,
         )
-    elif model_type == "TMF123":
-        model = TMF123(
+    elif model_type == "TMFin2":
+        model = TMFin2(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+        )
+    elif model_type == "TMFin123":
+        model = TMFin123(
             num_classes=num_classes,
             n_segment=num_frames,
             hidden_dim=hidden_dim,

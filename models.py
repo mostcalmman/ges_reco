@@ -10,7 +10,9 @@ import torchvision.models as models
 
 from modules import *
 
-modelList = ['ResNet18', 'LightTSM', 'LightTSMGRU', 'LightTMFGRU', 'TMF1', 'TMF2', 'TMF123', 'ab1', 'ab2', 'ab3']
+modelList = ['ResNet18', 'LightTSM', 'LightTSMGRU', 'LightTMFGRU', 'TMFin1', 'TMFin2', 'TMFin123', 'ab1', 'ab2', 'ab3',
+             'LightTMF2GRU'
+             ]
 
 
 # --------------------------
@@ -265,12 +267,70 @@ class LightTMFGRU(nn.Module):
         return out
     
 
-class TMF1(nn.Module):
+class LightTMF2GRU(nn.Module):
+    """
+    新版TMF: TMF2, 具体看module.py
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
+        super(LightTMF2GRU, self).__init__()
+        self.n_segment = n_segment
+        self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(0.5)
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.layer1 = TSMResBlock(32, 32, stride=1, n_segment=n_segment)
+        self.layer2 = TSMResBlock(32, 64, stride=2, n_segment=n_segment)
+        self.layer3 = TMF2ResBlock(64, 128, stride=2, n_segment=n_segment, reduction=4)
+
+        # GRU input: AdaptiveAvgPool2d(1,1) collapses spatial dims to 128-d vector per frame
+        self.gru = nn.GRU(
+            input_size=128,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x):
+        """
+        Args:
+            x: (B, T, 3, H, W) video frame sequence.
+        Returns:
+            (B, num_classes) classification logits.
+        """
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
+        x = self.conv1(x)                       # (B*T, 32, H/2, W/2)
+        x = self.layer1(x)                      # (B*T, 32, H/2, W/2)
+        x = self.layer2(x)                      # (B*T, 64, H/4, W/4)
+        x = self.layer3(x)                      # (B*T, 128, H/8, W/8)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))    # (B*T, 128, 1, 1)
+        x = x.view(b, t, -1)                    # (B, T, 128)
+
+        # GRU temporal aggregation
+        rnn_out, hidden = self.gru(x)           # hidden: (1, B, hidden_dim)
+        last_hidden = hidden[-1]                # (B, hidden_dim)
+
+        last_hidden = self.dropout(last_hidden)
+        out = self.fc(last_hidden)              # (B, num_classes)
+        return out
+    
+
+class TMFin1(nn.Module):
     """
     消融实验
     """
     def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
-        super(TMF1, self).__init__()
+        super(TMFin1, self).__init__()
         self.n_segment = n_segment
         self.hidden_dim = hidden_dim
         self.dropout = nn.Dropout(0.5)
@@ -316,12 +376,12 @@ class TMF1(nn.Module):
         return out
     
 
-class TMF2(nn.Module):
+class TMFin2(nn.Module):
     """
     消融实验
     """
     def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
-        super(TMF2, self).__init__()
+        super(TMFin2, self).__init__()
         self.n_segment = n_segment
         self.hidden_dim = hidden_dim
         self.dropout = nn.Dropout(0.5)
@@ -367,12 +427,12 @@ class TMF2(nn.Module):
         return out
     
 
-class TMF123(nn.Module):
+class TMFin123(nn.Module):
     """
     消融实验
     """
     def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
-        super(TMF123, self).__init__()
+        super(TMFin123, self).__init__()
         self.n_segment = n_segment
         self.hidden_dim = hidden_dim
         self.dropout = nn.Dropout(0.5)
