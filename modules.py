@@ -582,3 +582,420 @@ class SpatialAttention(nn.Module):
         y = self.conv(y)                               # (B*T, 1, H, W)
         
         return x * self.sigmoid(y)
+
+
+# --------------------------
+# MARK: Adaptive Channel Soft Shift (ACSS)
+# --------------------------
+
+class ACSS_Module(nn.Module):
+    """Adaptive Channel Soft Shift — learnable soft temporal shift.
+
+    Replaces the hard channel-partitioned shift of TSM with a per-channel
+    soft blending of temporal neighbors.  Each channel independently learns
+    a 3-way softmax distribution over {pull-from-t+1, keep-current, pull-from-t-1}.
+
+    At initialization the logits are set to mimic TSM defaults (1/8 left,
+    1/8 right, 6/8 static) so the module starts as a differentiable TSM and
+    can be fine-tuned from a TSM checkpoint without accuracy loss.
+
+    Args:
+        channels: Number of input channels (C).
+        n_segment: Number of temporal segments (T).
+        fold_div: Denominator for the TSM-style init partition. Default 8.
+    """
+
+    def __init__(self, channels, n_segment, fold_div=8):
+        super(ACSS_Module, self).__init__()
+        self.channels = channels
+        self.n_segment = n_segment
+        self.fold_div = fold_div
+        fold = channels // fold_div  # channels to shift per direction
+
+        # Learnable logits: (C, 3) — columns are [left, static, right]
+        self.shift_logits = nn.Parameter(torch.zeros(channels, 3))
+
+        # Initialize to mimic TSM hard-shift (sharp softmax via large logits)
+        with torch.no_grad():
+            # Channels [0, fold): favor left = pull from t+1
+            self.shift_logits[:fold] = torch.tensor([10.0, 0.0, 0.0])
+            # Channels [fold, 2*fold): favor right = pull from t-1
+            self.shift_logits[fold: 2 * fold] = torch.tensor([0.0, 0.0, 10.0])
+            # Channels [2*fold, C): favor static = keep current frame
+            self.shift_logits[2 * fold:] = torch.tensor([0.0, 10.0, 0.0])
+
+        # TODO: 约束注入点 — 可在此处添加 clamp 或正则化逻辑限制前后移位通道总数不超过 C/2
+
+    def forward(self, x, n_segment=None):
+        """
+        Args:
+            x: Input tensor, shape (B*T, C, H, W).
+            n_segment: Override for temporal segments. Uses self.n_segment if None.
+
+        Returns:
+            Tensor of same shape (B*T, C, H, W) with soft temporal shift applied.
+        """
+        if n_segment is None:
+            n_segment = self.n_segment
+
+        # Guard: no temporal axis → identity
+        if n_segment <= 1:
+            return x
+
+        BT, C, H, W = x.size()
+        B = BT // n_segment
+        T = n_segment
+
+        # Soft weights via softmax — float32 for numerical stability
+        weights = F.softmax(self.shift_logits, dim=-1,
+                            dtype=torch.float32)          # (C, 3)
+        w_left = weights[:, 0]    # (C,) — weight for x_{t+1} (pull from future)
+        w_static = weights[:, 1]  # (C,) — weight for x_t   (keep current)
+        w_right = weights[:, 2]   # (C,) — weight for x_{t-1} (pull from past)
+
+        # Reshape to 5-D for temporal indexing
+        x_5d = x.view(B, T, C, H, W)                     # (B, T, C, H, W)
+
+        # Build temporal neighbors with zero-padding at boundaries
+        x_prev = torch.zeros_like(x_5d)                   # X_{t-1}
+        x_prev[:, 1:] = x_5d[:, :-1]                      # first frame is zero
+
+        x_next = torch.zeros_like(x_5d)                   # X_{t+1}
+        x_next[:, :-1] = x_5d[:, 1:]                      # last frame is zero
+
+        # Reshape weights for broadcasting: (1, 1, C, 1, 1)
+        w_left = w_left.view(1, 1, C, 1, 1)
+        w_static = w_static.view(1, 1, C, 1, 1)
+        w_right = w_right.view(1, 1, C, 1, 1)
+
+        # Soft temporal blend
+        out = (w_left * x_next          # pull from t+1 (future → current)
+               + w_static * x_5d        # keep current frame
+               + w_right * x_prev)      # pull from t-1 (past → current)
+        # out shape: (B, T, C, H, W)
+
+        return out.view(BT, C, H, W)                      # (B*T, C, H, W)
+
+
+class ACSSResBlock(nn.Module):
+    """Residual block with ACSS (Adaptive Channel Soft Shift) before the first conv.
+
+    Drop-in replacement for TSMResBlock: same interface, same residual
+    structure, but uses a learnable soft shift (ACSS_Module) instead of the
+    hard channel-partitioned temporal_shift.
+
+    Architecture:
+        identity = shortcut(x)
+        out = acss(x)                      -- learnable soft temporal shift
+        out = ReLU(BN(Conv2d(out)))        -- 3x3, may downsample via stride
+        out = BN(Conv2d(out))              -- 3x3, stride=1
+        out = ReLU(out + identity)
+
+    Args:
+        in_channels: Input channel count.
+        out_channels: Output channel count.
+        stride: Stride for the first convolution (spatial downsampling).
+        n_segment: Number of temporal segments for ACSS.
+    """
+
+    def __init__(self, in_channels, out_channels, stride=1, n_segment=8):
+        super(ACSSResBlock, self).__init__()
+        self.n_segment = n_segment
+
+        # Adaptive soft temporal shift (replaces hard temporal_shift)
+        self.acss = ACSS_Module(in_channels, n_segment)
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # Projection shortcut when dimensions change
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        identity = self.shortcut(x)
+
+        # Learnable soft temporal shift before first conv
+        out = self.acss(x)
+        out = F.relu(self.bn1(self.conv1(out)))
+        out = self.bn2(self.conv2(out))
+
+        out += identity
+        out = F.relu(out)
+        return out  # (B*T, C_out, H_out, W_out)
+
+
+# --------------------------
+# MARK: Motion-Guided Dynamic Shift (MGDS)
+# --------------------------
+
+class MGDS_Module(nn.Module):
+    """Motion-Guided Dynamic Shift — instance-adaptive temporal shift.
+
+    Unlike ACSS which learns static per-channel shift weights, MGDS generates
+    per-frame, per-channel shift weights dynamically from motion intensity
+    features.  A lightweight bottleneck MLP maps the pre-sigmoid channel
+    attention vector (from ME's channel path) to a 3-way softmax distribution
+    over {pull-from-t+1, keep-current, pull-from-t-1} for every channel.
+
+    This allows the shift pattern to adapt to the actual motion content of
+    each video clip at inference time.
+
+    Args:
+        channels: Number of input channels (C).
+        n_segment: Number of temporal segments (T).
+        reduction: Bottleneck reduction ratio for MLP. Default 4.
+    """
+
+    def __init__(self, channels, n_segment, reduction=4):
+        super(MGDS_Module, self).__init__()
+        self.channels = channels
+        self.n_segment = n_segment
+
+        # Bottleneck MLP weight generator: v_motion (C) → shift weights (3*C)
+        self.fc1 = nn.Linear(channels, channels // reduction)   # squeeze: C → C//r
+        self.relu = nn.ReLU(inplace=True)
+        self.fc2 = nn.Linear(channels // reduction, 3 * channels)  # expand: C//r → 3*C
+
+    def forward(self, x, v_motion):
+        """
+        Args:
+            x: Main branch features, shape (B*T, C, H, W).
+            v_motion: Pre-sigmoid motion intensity from ME channel path,
+                      shape (B*T, C, 1, 1). Raw logits, NOT sigmoid output.
+
+        Returns:
+            Tensor of same shape (B*T, C, H, W) with motion-guided
+            dynamic temporal shift applied.
+        """
+        n_segment = self.n_segment
+
+        # Guard: no temporal axis → identity
+        if n_segment <= 1:
+            return x
+
+        BT, C, H, W = x.size()
+
+        # ---- Step 1: Weight generation via bottleneck MLP ----
+        v = v_motion.view(BT, C)                              # (B*T, C)
+        v = self.relu(self.fc1(v))                             # (B*T, C//r)
+        v = self.fc2(v)                                        # (B*T, 3*C)
+        v = v.view(BT, C, 3)                                   # (B*T, C, 3) — per-channel triplet [left, static, right]
+
+        # Normalize to probability distribution per channel
+        weights = F.softmax(v, dim=-1, dtype=torch.float32)    # (B*T, C, 3)
+        # weights[i, c, :] = [α_c, β_c, γ_c] 表示第 i 帧第 c 通道的时序融合权重
+
+        # ---- Step 2: Temporal neighbor extraction ----
+        B = BT // n_segment
+        T = n_segment
+
+        x_5d = x.view(B, T, C, H, W)                          # (B, T, C, H, W)
+
+        x_prev = torch.zeros_like(x_5d)                        # X_{t-1}, zero-pad first frame
+        x_prev[:, 1:] = x_5d[:, :-1]                           # (B, T, C, H, W)
+
+        x_next = torch.zeros_like(x_5d)                        # X_{t+1}, zero-pad last frame
+        x_next[:, :-1] = x_5d[:, 1:]                           # (B, T, C, H, W)
+
+        # ---- Step 3: Dynamic shift fusion ----
+        weights_5d = weights.view(B, T, C, 3)                  # (B, T, C, 3)
+        w_left, w_static, w_right = weights_5d.unbind(dim=-1)  # each (B, T, C)
+
+        # Add spatial dims for broadcasting: (B, T, C) → (B, T, C, 1, 1)
+        w_left = w_left.unsqueeze(-1).unsqueeze(-1)             # (B, T, C, 1, 1)
+        w_static = w_static.unsqueeze(-1).unsqueeze(-1)         # (B, T, C, 1, 1)
+        w_right = w_right.unsqueeze(-1).unsqueeze(-1)           # (B, T, C, 1, 1)
+
+        # Weighted blend of temporal neighbors
+        out = (w_left * x_prev                                  # pull from t-1
+               + w_static * x_5d                                # keep current
+               + w_right * x_next)                              # pull from t+1
+        # out shape: (B, T, C, H, W)
+
+        return out.view(BT, C, H, W)                           # (B*T, C, H, W)
+
+
+# --------------------------
+# MARK: TMF3 — ME + MGDS Fusion Block
+# --------------------------
+
+class TMF3ResBlock(nn.Module):
+    """Residual block integrating Motion Excitation + MGDS with dual fusion modes.
+
+    Combines the multi-frame spatial ME pipeline (from TMF2ResBlock) with the
+    Motion-Guided Dynamic Shift (MGDS) module.  The ME pipeline produces three
+    outputs: pre-sigmoid channel logits, channel attention, and spatial attention.
+    The pre-sigmoid logits drive MGDS's instance-adaptive temporal shift.
+
+    Fusion Mode A (Oracle, default):
+        mgds_out = MGDS(x, v_pre_sigmoid)
+        out = mgds_out * spatial_weight + x
+
+    Fusion Mode B (Dual-path):
+        mgds_out = MGDS(x, v_pre_sigmoid)
+        out = x * channel_weight * spatial_weight + mgds_out * spatial_weight
+
+    Then: out → conv1 → bn1 → relu → conv2 → bn2 → (+identity) → relu
+
+    Args:
+        in_channels: Input channel count.
+        out_channels: Output channel count.
+        stride: Stride for the first convolution (spatial downsampling).
+        n_segment: Number of temporal segments (T).
+        reduction: Channel reduction ratio for ME and MGDS. Default 4.
+        fusion_mode: 'A' (Oracle) or 'B' (Dual-path). Default 'A'.
+    """
+
+    def __init__(self, in_channels, out_channels, stride=1, n_segment=8,
+                 reduction=4, fusion_mode='A'):
+        super(TMF3ResBlock, self).__init__()
+        self.n_segment = n_segment
+        self.fusion_mode = fusion_mode
+
+        # ---- Conv pipeline (identical to TMF2ResBlock) ----
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # Projection shortcut when dimensions change
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+        # ---- Motion Excitation components (replicated from TMF2ResBlock) ----
+        reduced_channels = in_channels // reduction
+        self.short_channels = reduced_channels // 2
+        self.long_channels = reduced_channels - self.short_channels
+
+        self.squeeze = nn.Conv2d(in_channels, reduced_channels,
+                                 kernel_size=1, bias=False)
+        self.me_bn = nn.BatchNorm2d(reduced_channels)
+        self.me_conv = nn.Conv2d(reduced_channels, reduced_channels, kernel_size=3,
+                                  padding=1, groups=reduced_channels, bias=False)
+
+        # Channel path
+        self.expand = nn.Conv2d(reduced_channels, in_channels,
+                                kernel_size=1, bias=False)
+        self.channel_sigmoid = nn.Sigmoid()
+
+        # Spatial path: single-channel map → 7×7 conv → sigmoid
+        self.spatial_conv = nn.Conv2d(1, 1, kernel_size=7, padding=3, bias=False)
+        self.spatial_sigmoid = nn.Sigmoid()
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+
+        # ---- MGDS module ----
+        self.mgds = MGDS_Module(in_channels, n_segment, reduction=reduction)
+
+    def _get_me_attention(self, x):
+        """Extract motion attention: pre-sigmoid logits, channel weight, spatial weight.
+
+        Returns:
+            v_pre_sigmoid: (B*T, C, 1, 1) — raw channel logits before sigmoid
+            channel_weight: (B*T, C, 1, 1) — sigmoid of v_pre_sigmoid, values in [0, 1]
+            spatial_weight: (B*T, 1, H, W) — spatial attention, values in [0, 1]
+        """
+        if self.n_segment <= 1:
+            # Guard: no temporal axis → zero attention (identity-like)
+            nt, c, h, w = x.size()
+            v_pre_sigmoid = torch.zeros(nt, c, 1, 1, device=x.device, dtype=x.dtype)
+            channel_weight = torch.zeros(nt, c, 1, 1, device=x.device, dtype=x.dtype)
+            spatial_weight = torch.zeros(nt, 1, h, w, device=x.device, dtype=x.dtype)
+            return v_pre_sigmoid, channel_weight, spatial_weight
+
+        nt, c, h, w = x.size()
+        n_batch = nt // self.n_segment
+
+        # Squeeze: reduce channels
+        x3 = self.squeeze(x)                                    # (B*T, C/r, H, W)
+        x3 = self.me_bn(x3)                                     # (B*T, C/r, H, W)
+
+        # Reshape for temporal operations
+        x3 = x3.view(n_batch, self.n_segment, -1, h, w)         # (B, T, C/r, H, W)
+
+        # Depthwise conv on temporal sequence
+        x3_reshaped = x3.view(nt, -1, h, w)                     # (B*T, C/r, H, W)
+        x3_conv = self.me_conv(x3_reshaped)                      # (B*T, C/r, H, W)
+        x3_conv = x3_conv.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
+
+        # Split channels: short-range and long-range diffs
+        d_short = x3.new_zeros(n_batch, self.n_segment, self.short_channels, h, w)
+        if self.short_channels > 0 and self.n_segment > 1:
+            # 短程: conv(X_t) - X_{t-1}; t=0 置零
+            d_short[:, 1:] = (x3_conv[:, 1:, :self.short_channels]
+                              - x3[:, :-1, :self.short_channels])  # (B, T-1, short_ch, H, W)
+
+        d_long = x3.new_zeros(n_batch, self.n_segment, self.long_channels, h, w)
+        if self.long_channels > 0 and self.n_segment > 2:
+            # 长程: conv(X_{t+1}) - X_{t-1}; t=0 和 t=T-1 置零
+            d_long[:, 1:-1] = (x3_conv[:, 2:, self.short_channels:]
+                               - x3[:, :-2, self.short_channels:])  # (B, T-2, long_ch, H, W)
+
+        d = torch.cat([d_short, d_long], dim=2)                  # (B, T, C/r, H, W)
+
+        # ---- Channel Path ----
+        d_channel = d.view(nt, -1, h, w)                         # (B*T, C/r, H, W)
+        channel_pool = self.avg_pool(d_channel)                   # (B*T, C/r, 1, 1)
+        v_pre_sigmoid = self.expand(channel_pool)                 # (B*T, C, 1, 1) — raw logits
+        channel_weight = self.channel_sigmoid(v_pre_sigmoid)      # (B*T, C, 1, 1) — [0, 1]
+
+        # ---- Spatial Path ----
+        d_spatial = d.mean(dim=2, keepdim=True)                   # (B, T, 1, H, W)
+        d_spatial = d_spatial.view(nt, 1, h, w)                   # (B*T, 1, H, W)
+        spatial_weight = self.spatial_conv(d_spatial)              # (B*T, 1, H, W)
+        spatial_weight = self.spatial_sigmoid(spatial_weight)      # (B*T, 1, H, W) — [0, 1]
+
+        return v_pre_sigmoid, channel_weight, spatial_weight
+
+    def forward(self, x):
+        """
+        Args:
+            x: Input tensor, shape (B*T, C, H, W).
+
+        Returns:
+            Output tensor, shape (B*T, C_out, H_out, W_out).
+        """
+        # x: (B*T, C, H, W)
+        identity = self.shortcut(x)                               # (B*T, C_out, H_out, W_out)
+
+        # ME attention: three outputs
+        v_pre_sigmoid, channel_weight, spatial_weight = self._get_me_attention(x)
+
+        # Fusion
+        if self.fusion_mode == 'A':
+            # Oracle: MGDS gated by spatial attention + residual
+            mgds_out = self.mgds(x, v_pre_sigmoid)                # (B*T, C, H, W)
+            out = mgds_out * spatial_weight + x                   # (B*T, C, H, W)
+        elif self.fusion_mode == 'B':
+            # Dual-path: ME-weighted x + MGDS, both spatially gated
+            mgds_out = self.mgds(x, v_pre_sigmoid)                # (B*T, C, H, W)
+            out = (x * channel_weight * spatial_weight
+                   + mgds_out * spatial_weight)                   # (B*T, C, H, W)
+        else:
+            raise ValueError(f"Unknown fusion_mode '{self.fusion_mode}', expected 'A' or 'B'")
+
+        # Conv pipeline
+        out = F.relu(self.bn1(self.conv1(out)))                   # (B*T, C_out, H_out, W_out)
+        out = self.bn2(self.conv2(out))                           # (B*T, C_out, H_out, W_out)
+
+        # Residual connection
+        out += identity                                           # (B*T, C_out, H_out, W_out)
+        out = F.relu(out)
+        return out                                                # (B*T, C_out, H_out, W_out)
