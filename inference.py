@@ -325,3 +325,4 @@ if __name__ == "__main__":
 # python inference.py --csv_path dataset/Test.csv --root_dir dataset/Test --model_type ultralight_parallel_me_gru --model_weight checkpoint/final_2/model_ultralight_parallel_me_gru.pth --output results/final_2/test
 # python inference.py --csv_path dataset/Train.csv --root_dir dataset/Train --model_type ultralight_parallel_me_gru --model_weight checkpoint/final_2/model_ultralight_parallel_me_gru.pth --output results/final_2/train
 # python inference.py --csv_path dataset/Validation.csv --root_dir dataset/Validation --model_type ultralight_parallel_me_gru --model_weight checkpoint/final_2/model_ultralight_parallel_me_gru.pth --output results/final_2/val
+# python inference.py --csv_path dataset/Final.csv --root_dir dataset/Final --model_type LightTMF2GRU --model_weight checkpoint/LightTMF2GRU/model_LightTMF2GRU.pth --output results/LightTMF2GRU
