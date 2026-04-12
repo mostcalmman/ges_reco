@@ -561,158 +561,7 @@ class TMF2ResBlock(nn.Module):
         return out  # (B*T, C_out, H_out, W_out)
 
 
-# --------------------------
-# MARK: TMF5 — ME + ACSS Fusion Block (TMF2 with learnable soft shift)
-# --------------------------
 
-class TMF5ResBlock(nn.Module):
-    """Residual block integrating Motion Excitation + ACSS soft shift.
-
-    This is an evolution of TMF2ResBlock that replaces the hard temporal_shift
-    with the learnable ACSS_Module. The fusion formula remains parallel:
-        out = x * channel_weight * spatial_weight + acss_shifted(x)
-
-    Architecture:
-        1) Multi-Frame Motion Excitation (same as TMF2):
-           - Short-range diff: conv(X_t) - X_{t-1}
-           - Long-range diff: conv(X_{t+1}) - X_{t-1}
-           - Channel Path: GAP → 1x1 expand → sigmoid → (B*T, C, 1, 1)
-           - Spatial Path: channel-mean → 7x7 conv → sigmoid → (B*T, 1, H, W)
-        2) ACSS soft shift: learnable per-channel temporal blending
-        3) Fusion: x * channel_weight * spatial_weight + acss_out
-        4) Conv pipeline: conv1 → bn1 → relu → conv2 → bn2 → (+identity) → relu
-
-    Args:
-        in_channels: Input channel count.
-        out_channels: Output channel count.
-        stride: Stride for the first convolution (spatial downsampling).
-        n_segment: Number of temporal segments (T).
-        reduction: Channel reduction ratio for ME. Default 4.
-        fold_div: Fold divisor for ACSS initialization. Default 8.
-    """
-
-    def __init__(self, in_channels, out_channels, stride=1, n_segment=8,
-                 reduction=4, fold_div=8):
-        super(TMF5ResBlock, self).__init__()
-        self.n_segment = n_segment
-
-        # ---- Conv pipeline (identical to TMF2ResBlock) ----
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
-                               stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
-                               stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-
-        # Projection shortcut when dimensions change
-        self.shortcut = nn.Sequential()
-        if stride != 1 or in_channels != out_channels:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1,
-                          stride=stride, bias=False),
-                nn.BatchNorm2d(out_channels)
-            )
-
-        # ---- Multi-Frame Motion Excitation (identical to TMF2) ----
-        reduced_channels = in_channels // reduction
-        self.short_channels = reduced_channels // 2
-        self.long_channels = reduced_channels - self.short_channels
-
-        self.squeeze = nn.Conv2d(in_channels, reduced_channels, kernel_size=1, bias=False)
-        self.me_bn = nn.BatchNorm2d(reduced_channels)
-        self.me_conv = nn.Conv2d(reduced_channels, reduced_channels, kernel_size=3,
-                                  padding=1, groups=reduced_channels, bias=False)
-
-        # Channel path
-        self.expand = nn.Conv2d(reduced_channels, in_channels, kernel_size=1, bias=False)
-        self.channel_sigmoid = nn.Sigmoid()
-
-        # Spatial path
-        self.spatial_conv = nn.Conv2d(1, 1, kernel_size=7, padding=3, bias=False)
-        self.spatial_sigmoid = nn.Sigmoid()
-
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-
-        # ---- ACSS soft shift (replaces temporal_shift) ----
-        self.acss = ACSS_Module(in_channels, n_segment, fold_div=fold_div)
-
-    def _get_me_attention(self, x):
-        """Extract channel and spatial attention from multi-frame motion diff.
-
-        Returns:
-            channel_weight: (B*T, C, 1, 1), values in [0, 1]
-            spatial_weight: (B*T, 1, H, W), values in [0, 1]
-        """
-        if self.n_segment <= 1:
-            nt, c, h, w = x.size()
-            channel_weight = torch.zeros(nt, c, 1, 1, device=x.device, dtype=x.dtype)
-            spatial_weight = torch.zeros(nt, 1, h, w, device=x.device, dtype=x.dtype)
-            return channel_weight, spatial_weight
-
-        nt, c, h, w = x.size()
-        n_batch = nt // self.n_segment
-
-        # Squeeze
-        x3 = self.squeeze(x)  # (B*T, C/r, H, W)
-        x3 = self.me_bn(x3)
-
-        # Reshape for temporal operations
-        x3 = x3.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
-
-        # Conv on temporal sequence
-        x3_reshaped = x3.view(nt, -1, h, w)  # (B*T, C/r, H, W)
-        x3_conv = self.me_conv(x3_reshaped)
-        x3_conv = x3_conv.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
-
-        # Split channels: short/long each takes half reduced channels
-        d_short = x3.new_zeros(n_batch, self.n_segment, self.short_channels, h, w)
-        if self.short_channels > 0 and self.n_segment > 1:
-            d_short[:, 1:] = x3_conv[:, 1:, :self.short_channels] - x3[:, :-1, :self.short_channels]
-
-        d_long = x3.new_zeros(n_batch, self.n_segment, self.long_channels, h, w)
-        if self.long_channels > 0 and self.n_segment > 2:
-            d_long[:, 1:-1] = x3_conv[:, 2:, self.short_channels:] - x3[:, :-2, self.short_channels:]
-
-        d = torch.cat([d_short, d_long], dim=2)  # (B, T, C/r, H, W)
-
-        # Channel Path
-        d_channel = d.view(nt, -1, h, w)  # (B*T, C/r, H, W)
-        channel_weight = self.avg_pool(d_channel)  # (B*T, C/r, 1, 1)
-        channel_weight = self.expand(channel_weight)  # (B*T, C, 1, 1)
-        channel_weight = self.channel_sigmoid(channel_weight)
-
-        # Spatial Path
-        d_spatial = d.mean(dim=2, keepdim=True)  # (B, T, 1, H, W)
-        d_spatial = d_spatial.view(nt, 1, h, w)  # (B*T, 1, H, W)
-        spatial_weight = self.spatial_conv(d_spatial)
-        spatial_weight = self.spatial_sigmoid(spatial_weight)
-
-        return channel_weight, spatial_weight
-
-    def forward(self, x):
-        """
-        Args:
-            x: Input tensor, shape (B*T, C, H, W).
-
-        Returns:
-            Output tensor, shape (B*T, C_out, H_out, W_out).
-        """
-        identity = self.shortcut(x)
-
-        # ---- Parallel MultiFrame Spatial ME + ACSS fusion ----
-        channel_weight, spatial_weight = self._get_me_attention(x)  # (B*T,C,1,1), (B*T,1,H,W)
-        acss_out = self.acss(x)  # (B*T, C, H, W) — learnable soft shift
-
-        # Fusion: x * channel * spatial + acss_shifted
-        out = x * channel_weight * spatial_weight + acss_out  # (B*T, C, H, W)
-
-        # ---- Conv pipeline ----
-        out = F.relu(self.bn1(self.conv1(out)))  # (B*T, C_out, H/stride, W/stride)
-        out = self.bn2(self.conv2(out))           # (B*T, C_out, H_out, W_out)
-
-        out += identity
-        out = F.relu(out)
-        return out  # (B*T, C_out, H_out, W_out)
 
 
 class SpatialAttention(nn.Module):
@@ -1148,3 +997,157 @@ class TMF3ResBlock(nn.Module):
         out += identity                                           # (B*T, C_out, H_out, W_out)
         out = F.relu(out)
         return out                                                # (B*T, C_out, H_out, W_out)
+    
+
+# --------------------------
+# MARK: TMF5 — ME + ACSS Fusion Block (TMF2 with learnable soft shift)
+# --------------------------
+
+class TMF5ResBlock(nn.Module):
+    """Residual block integrating Motion Excitation + ACSS soft shift.
+
+    This is an evolution of TMF2ResBlock that replaces the hard temporal_shift
+    with the learnable ACSS_Module. The fusion formula remains parallel:
+        out = x * channel_weight * spatial_weight + acss_shifted(x)
+
+    Architecture:
+        1) Multi-Frame Motion Excitation (same as TMF2):
+           - Short-range diff: conv(X_t) - X_{t-1}
+           - Long-range diff: conv(X_{t+1}) - X_{t-1}
+           - Channel Path: GAP → 1x1 expand → sigmoid → (B*T, C, 1, 1)
+           - Spatial Path: channel-mean → 7x7 conv → sigmoid → (B*T, 1, H, W)
+        2) ACSS soft shift: learnable per-channel temporal blending
+        3) Fusion: x * channel_weight * spatial_weight + acss_out
+        4) Conv pipeline: conv1 → bn1 → relu → conv2 → bn2 → (+identity) → relu
+
+    Args:
+        in_channels: Input channel count.
+        out_channels: Output channel count.
+        stride: Stride for the first convolution (spatial downsampling).
+        n_segment: Number of temporal segments (T).
+        reduction: Channel reduction ratio for ME. Default 4.
+        fold_div: Fold divisor for ACSS initialization. Default 8.
+    """
+
+    def __init__(self, in_channels, out_channels, stride=1, n_segment=8,
+                 reduction=4, fold_div=8):
+        super(TMF5ResBlock, self).__init__()
+        self.n_segment = n_segment
+
+        # ---- Conv pipeline (identical to TMF2ResBlock) ----
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # Projection shortcut when dimensions change
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+        # ---- Multi-Frame Motion Excitation (identical to TMF2) ----
+        reduced_channels = in_channels // reduction
+        self.short_channels = reduced_channels // 2
+        self.long_channels = reduced_channels - self.short_channels
+
+        self.squeeze = nn.Conv2d(in_channels, reduced_channels, kernel_size=1, bias=False)
+        self.me_bn = nn.BatchNorm2d(reduced_channels)
+        self.me_conv = nn.Conv2d(reduced_channels, reduced_channels, kernel_size=3,
+                                  padding=1, groups=reduced_channels, bias=False)
+
+        # Channel path
+        self.expand = nn.Conv2d(reduced_channels, in_channels, kernel_size=1, bias=False)
+        self.channel_sigmoid = nn.Sigmoid()
+
+        # Spatial path
+        self.spatial_conv = nn.Conv2d(1, 1, kernel_size=7, padding=3, bias=False)
+        self.spatial_sigmoid = nn.Sigmoid()
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+
+        # ---- ACSS soft shift (replaces temporal_shift) ----
+        self.acss = ACSS_Module(in_channels, n_segment, fold_div=fold_div)
+
+    def _get_me_attention(self, x):
+        """Extract channel and spatial attention from multi-frame motion diff.
+
+        Returns:
+            channel_weight: (B*T, C, 1, 1), values in [0, 1]
+            spatial_weight: (B*T, 1, H, W), values in [0, 1]
+        """
+        if self.n_segment <= 1:
+            nt, c, h, w = x.size()
+            channel_weight = torch.zeros(nt, c, 1, 1, device=x.device, dtype=x.dtype)
+            spatial_weight = torch.zeros(nt, 1, h, w, device=x.device, dtype=x.dtype)
+            return channel_weight, spatial_weight
+
+        nt, c, h, w = x.size()
+        n_batch = nt // self.n_segment
+
+        # Squeeze
+        x3 = self.squeeze(x)  # (B*T, C/r, H, W)
+        x3 = self.me_bn(x3)
+
+        # Reshape for temporal operations
+        x3 = x3.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
+
+        # Conv on temporal sequence
+        x3_reshaped = x3.view(nt, -1, h, w)  # (B*T, C/r, H, W)
+        x3_conv = self.me_conv(x3_reshaped)
+        x3_conv = x3_conv.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
+
+        # Split channels: short/long each takes half reduced channels
+        d_short = x3.new_zeros(n_batch, self.n_segment, self.short_channels, h, w)
+        if self.short_channels > 0 and self.n_segment > 1:
+            d_short[:, 1:] = x3_conv[:, 1:, :self.short_channels] - x3[:, :-1, :self.short_channels]
+
+        d_long = x3.new_zeros(n_batch, self.n_segment, self.long_channels, h, w)
+        if self.long_channels > 0 and self.n_segment > 2:
+            d_long[:, 1:-1] = x3_conv[:, 2:, self.short_channels:] - x3[:, :-2, self.short_channels:]
+
+        d = torch.cat([d_short, d_long], dim=2)  # (B, T, C/r, H, W)
+
+        # Channel Path
+        d_channel = d.view(nt, -1, h, w)  # (B*T, C/r, H, W)
+        channel_weight = self.avg_pool(d_channel)  # (B*T, C/r, 1, 1)
+        channel_weight = self.expand(channel_weight)  # (B*T, C, 1, 1)
+        channel_weight = self.channel_sigmoid(channel_weight)
+
+        # Spatial Path
+        d_spatial = d.mean(dim=2, keepdim=True)  # (B, T, 1, H, W)
+        d_spatial = d_spatial.view(nt, 1, h, w)  # (B*T, 1, H, W)
+        spatial_weight = self.spatial_conv(d_spatial)
+        spatial_weight = self.spatial_sigmoid(spatial_weight)
+
+        return channel_weight, spatial_weight
+
+    def forward(self, x):
+        """
+        Args:
+            x: Input tensor, shape (B*T, C, H, W).
+
+        Returns:
+            Output tensor, shape (B*T, C_out, H_out, W_out).
+        """
+        identity = self.shortcut(x)
+
+        # ---- Parallel MultiFrame Spatial ME + ACSS fusion ----
+        channel_weight, spatial_weight = self._get_me_attention(x)  # (B*T,C,1,1), (B*T,1,H,W)
+        acss_out = self.acss(x)  # (B*T, C, H, W) — learnable soft shift
+
+        # Fusion: x * channel * spatial + acss_shifted
+        out = x * channel_weight * spatial_weight + acss_out  # (B*T, C, H, W)
+
+        # ---- Conv pipeline ----
+        out = F.relu(self.bn1(self.conv1(out)))  # (B*T, C_out, H/stride, W/stride)
+        out = self.bn2(self.conv2(out))           # (B*T, C_out, H_out, W_out)
+
+        out += identity
+        out = F.relu(out)
+        return out  # (B*T, C_out, H_out, W_out)
