@@ -2,7 +2,7 @@
     "_comment": "手势识别项目配置文件 - 根据平台自动选择合适的配置",
     
     "common": {
-        "model_type": "ultralight_parallel_me_gru",
+        "model_type": "LightTMF4GRU",
         "data_dir": "dataset",
         "checkpoint_dir": "checkpoint",
         "optimizer": "adamw",
