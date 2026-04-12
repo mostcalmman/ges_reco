@@ -982,7 +982,7 @@ class TMF3ResBlock(nn.Module):
             # Dual-path: ME-weighted x + MGDS, both spatially gated
             mgds_out = self.mgds(x, v_pre_sigmoid)                # (B*T, C, H, W)
             out = (x * channel_weight * spatial_weight
-                   + mgds_out * spatial_weight)                   # (B*T, C, H, W)
+                   + mgds_out * spatial_weight + x)               # (B*T, C, H, W)
         else:
             raise ValueError(f"Unknown fusion_mode '{self.fusion_mode}', expected 'A' or 'B'")
 

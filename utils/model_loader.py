@@ -39,8 +39,26 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
             n_segment=num_frames,
             hidden_dim=hidden_dim,
         )
+    elif model_type == "LightTMF25GRU":
+        model = LightTMF25GRU(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+        )
+    elif model_type == "LightTMF26GRU":
+        model = LightTMF26GRU(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+        )
     elif model_type == "LightTMF3GRU":
         model = LightTMF3GRU(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+        )
+    elif model_type == "LightTMF4GRU":
+        model = LightTMF4GRU(
             num_classes=num_classes,
             n_segment=num_frames,
             hidden_dim=hidden_dim,
