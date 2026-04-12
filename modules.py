@@ -500,26 +500,21 @@ class TMF2ResBlock(nn.Module):
             spatial_weight: (B*T, 1, H, W), values in [0, 1]
         """
         if self.n_segment <= 1:
-            # Keep fusion as identity when there is no temporal axis.
-            nt, c, h, w = x.size()
-            channel_weight = torch.zeros(nt, c, 1, 1, device=x.device, dtype=x.dtype)
-            spatial_weight = torch.zeros(nt, 1, h, w, device=x.device, dtype=x.dtype)
+            # handle single-frame, not mature way, but this situation shouldn't happen in practice
+            channel_weight = torch.ones(nt, c, 1, 1, device=x.device, dtype=x.dtype)
+            spatial_weight = torch.ones(nt, 1, h, w, device=x.device, dtype=x.dtype)
             return channel_weight, spatial_weight
 
         nt, c, h, w = x.size()
         n_batch = nt // self.n_segment
 
         # Squeeze
-        x3 = self.squeeze(x)  # (B*T, C/r, H, W)
-        x3 = self.me_bn(x3)
+        x_squeeze_4d = self.me_bn(self.squeeze(x))         # (B*T, C/r, H, W)
+        x_conv_4d = self.me_conv(x_squeeze_4d)             # (B*T, C/r, H, W)
 
-        # Reshape for temporal operations
-        x3 = x3.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
-
-        # Conv on temporal sequence
-        x3_reshaped = x3.view(nt, -1, h, w)  # (B*T, C/r, H, W)
-        x3_conv = self.me_conv(x3_reshaped)
-        x3_conv = x3_conv.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
+        # 统一转换为 5D 以便进行时序差分
+        x3 = x_squeeze_4d.view(n_batch, self.n_segment, -1, h, w)      # (B, T, C/r, H, W)
+        x3_conv = x_conv_4d.view(n_batch, self.n_segment, -1, h, w)    # (B, T, C/r, H, W)
 
         # Split channels: short/long each takes half reduced channels.
         d_short = x3.new_zeros(n_batch, self.n_segment, self.short_channels, h, w)
@@ -535,14 +530,14 @@ class TMF2ResBlock(nn.Module):
         d = torch.cat([d_short, d_long], dim=2)  # (B, T, C/r, H, W)
 
         # Channel Path
-        d_channel = d.view(nt, -1, h, w)  # (B*T, C/r, H, W)
+        d_channel = d.reshape(nt, -1, h, w)  # (B*T, C/r, H, W)
         channel_weight = self.avg_pool(d_channel)  # (B*T, C/r, 1, 1)
         channel_weight = self.expand(channel_weight)  # (B*T, C, 1, 1)
         channel_weight = self.channel_sigmoid(channel_weight)
 
         # Spatial Path
         d_spatial = d.mean(dim=2, keepdim=True)  # (B, T, 1, H, W)
-        d_spatial = d_spatial.view(nt, 1, h, w)  # (B*T, 1, H, W)
+        d_spatial = d_spatial.reshape(nt, 1, h, w)  # (B*T, 1, H, W)
         spatial_weight = self.spatial_conv(d_spatial)
         spatial_weight = self.spatial_sigmoid(spatial_weight)
 
@@ -1141,7 +1136,7 @@ class TMF3ResBlock(nn.Module):
             # Dual-path: ME-weighted x + MGDS, both spatially gated
             mgds_out = self.mgds(x, v_pre_sigmoid)                # (B*T, C, H, W)
             out = (x * channel_weight * spatial_weight
-                   + mgds_out * spatial_weight)                   # (B*T, C, H, W)
+                   + mgds_out * spatial_weight + x)               # (B*T, C, H, W)
         else:
             raise ValueError(f"Unknown fusion_mode '{self.fusion_mode}', expected 'A' or 'B'")
 
