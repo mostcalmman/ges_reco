@@ -11,7 +11,7 @@ import torchvision.models as models
 from modules import *
 
 modelList = ['ResNet18', 'LightTSM', 'LightTSMGRU', 'LightTMFGRU', 'TMFin1', 'TMFin2', 'TMFin123', 'ab1', 'ab2', 'ab3',
-             'LightTMF2GRU', 'LightTMF25GRU', 'LightTMF26GRU', 'LightTMF3GRU', 'LightTMF4GRU', 'LightTMF4GRU'
+             'LightTMF2GRU', 'LightTMF25GRU', 'LightTMF26GRU', 'LightTMF3GRU', 'LightTMF4GRU', 'LightTMF5GRU'
              ]
 
 
