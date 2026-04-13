@@ -327,7 +327,7 @@ class LightTMF2GRU(nn.Module):
 
 class LightTMF25GRU(nn.Module):
     """
-    新版TMF: TMF2.5, 具体看module.py
+    验证 ACSS 有效性, 实际是负作用
     """
 
     def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
@@ -385,7 +385,7 @@ class LightTMF25GRU(nn.Module):
 
 class LightTMF26GRU(nn.Module):
     """
-    新版TMF: TMF2.6, 具体看module.py
+    验证 TMF3 有效性
     """
 
     def __init__(self, num_classes=27, n_segment=8, hidden_dim=128, fusion_mode='B'):
@@ -443,8 +443,7 @@ class LightTMF26GRU(nn.Module):
 
 class LightTMF3GRU(nn.Module):
     """
-    新版TMF: ACSS + TMF3 + GRU
-    Architecture: ACSS in shallow stages (layer1, layer2), TMF3 in deep stage (layer3)
+    TMF3: ACSS + TMF3 + GRU
     """
 
     def __init__(self, num_classes=27, n_segment=8, hidden_dim=128, fusion_mode='B'):
@@ -502,9 +501,8 @@ class LightTMF3GRU(nn.Module):
 
 class LightTMF4GRU(nn.Module):
     """
-    新消融实验
+    TMF3 的消融实验
     """
-
     def __init__(self, num_classes=27, n_segment=8, hidden_dim=128, fusion_mode='B'):
         super(LightTMF4GRU, self).__init__()
         self.n_segment = n_segment
@@ -538,6 +536,57 @@ class LightTMF4GRU(nn.Module):
         Returns:
             (B, num_classes) classification logits.
         """
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
+        x = self.conv1(x)                       # (B*T, 32, H/2, W/2)
+        x = self.layer1(x)                      # (B*T, 32, H/2, W/2)
+        x = self.layer2(x)                      # (B*T, 64, H/4, W/4)
+        x = self.layer3(x)                      # (B*T, 128, H/8, W/8)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))    # (B*T, 128, 1, 1)
+        x = x.view(b, t, -1)                    # (B, T, 128)
+
+        # GRU temporal aggregation
+        rnn_out, hidden = self.gru(x)           # hidden: (1, B, hidden_dim)
+        last_hidden = hidden[-1]                # (B, hidden_dim)
+
+        last_hidden = self.dropout(last_hidden)
+        out = self.fc(last_hidden)              # (B, num_classes)
+        return out
+
+
+class TMFin1(nn.Module):
+    """
+    消融实验
+    """
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
+        super(TMFin1, self).__init__()
+        self.n_segment = n_segment
+        self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(0.5)
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.layer1 = TMFResBlock(32, 32, stride=1, n_segment=n_segment, reduction=2)
+        self.layer2 = TSMResBlock(32, 64, stride=2, n_segment=n_segment)
+        self.layer3 = TSMResBlock(64, 128, stride=2, n_segment=n_segment)
+
+        # GRU input: AdaptiveAvgPool2d(1,1) collapses spatial dims to 128-d vector per frame
+        self.gru = nn.GRU(
+            input_size=128,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x):
         b, t, c, h, w = x.size()
 
         x = x.view(b * t, c, h, w)              # (B*T, 3, H, W)
