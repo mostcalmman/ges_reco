@@ -29,15 +29,19 @@ OPTIMIZER_CHOICES = ['sgd', 'adam', 'adamw']
 
 def parse_args():
     """解析命令行参数"""
-    config = get_config()
-    model_type = config.get("model_type", "resnet")
-    default_checkpoint_dir = os.path.join(config["checkpoint_dir"], model_type)
     parser = argparse.ArgumentParser(description="Gesture Recognition Training")
+    parser.add_argument(
+        "--model_type",
+        type=str,
+        choices=modelList,
+        default=None,
+        help="模型结构名称；若不传则使用 config.json 中的 model_type",
+    )
     parser.add_argument(
         "--checkpoint_dir",
         type=str,
-        default=default_checkpoint_dir,
-        help="模型和预测结果保存目录，默认: config.checkpoint_dir/{model_type}",
+        default=None,
+        help="模型和预测结果保存目录；若不传则使用 config.checkpoint_dir/{最终model_type}",
     )
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training from")
     return parser.parse_args()
@@ -67,10 +71,11 @@ def setup_training():
     args = parse_args()
     config = get_config()
 
-    model_type = config.get("model_type", "resnet")
+    model_type_in_config = config.get("model_type", "resnet")
+    model_type = args.model_type if args.model_type is not None else model_type_in_config
     if model_type not in modelList:
         raise ValueError(
-            f"config.json 中的 model_type 无效: {model_type}，"
+            f"最终生效的 model_type 无效: {model_type}，"
             f"可选值: {modelList}"
         )
     optimizer_name = config.get("optimizer", "adamw")
@@ -86,7 +91,11 @@ def setup_training():
     config["save_every"] = int(config.get("save_every", 10))
     config["early_stopping"] = bool(config.get("early_stopping", False))
     config["freeze_backbone"] = bool(config.get("freeze_backbone", False))
+    config["model_type"] = model_type
     args.model_type = model_type
+
+    if args.checkpoint_dir is None:
+        args.checkpoint_dir = os.path.join(config["checkpoint_dir"], model_type)
     
     # 更新配置
     config["checkpoint_dir"] = args.checkpoint_dir
