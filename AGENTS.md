@@ -1,45 +1,60 @@
-# AGENTS.md
+# PROJECT KNOWLEDGE BASE
 
-Guidelines for AI agents working in this gesture recognition repository.
+**Project**: Video Gesture Recognition (Jester Dataset)  
+**Stack**: PyTorch + ResNet18 variants + optional GRU  
+**Last Updated**: 2026-04-13
 
-## Project Overview
+---
 
-PyTorch-based video gesture recognition system using ResNet18 variants (with optional GRU) on the Jester dataset.
+## OVERVIEW
+PyTorch-based video gesture recognition system using ResNet18 variants (with optional GRU) on the Jester dataset. Supports multiple model architectures including LightTSM, LightTMF series with GRU variants.
 
-## Commands
-
-### Training
-```bash
-# Train ResNet model (default)
-python train.py --model_type resnet --epochs 20 --batch_size 48
-
-# Train ResNet+GRU model
-python train.py --model_type resnet_gru --epochs 20 --batch_size 48
+## STRUCTURE
+```
+.
+├── train.py              # Main training entry point
+├── inference.py          # Single video & dataset inference
+├── models.py             # Core model architectures (15+ variants)
+├── dataset.py            # Dataset loader, transforms, CONFIG
+├── modules.py            # Shared model components
+├── para_cal.py           # Model parameter counter
+├── split_test_set.py     # Dataset splitting utility
+├── config.json           # Platform-aware configuration
+├── utils/                # Config/model loading utilities
+│   ├── config_loader.py  # Platform-specific config loading
+│   └── model_loader.py   # Model instantiation
+├── split/                # Alternative implementation
+├── temporal-shift-module/# TSM (external reference)
+├── ActionNet/            # ActionNet reference implementation
+├── checkpoint/           # Model weights (gitignored)
+└── dataset/              # Jester data (gitignored)
 ```
 
-### Inference
-```bash
-# Single video inference
-python inference.py --video_path "dataset/Test/100010" --model_type resnet --model_weight "checkpoint/model_resnet.pth"
+## WHERE TO LOOK
+| Task | Location | Notes |
+|------|----------|-------|
+| Add new model | `models.py` | Inherit from `nn.Module`, follow existing pattern |
+| Modify data loading | `dataset.py` | Check `JesterDataset` class |
+| Change hyperparams | `config.json` | Platform-specific (windows/linux) |
+| Add utility | `utils/` | Import via `from utils import ...` |
+| Train model | `train.py` | Use `--model_type`, `--epochs` flags |
+| Run inference | `inference.py` | Supports single video or CSV batch |
 
-# Dataset inference
-python inference.py --csv_path "dataset/Test.csv" --root_dir "dataset/Test" --model_type resnet --model_weight "checkpoint/model_resnet.pth"
-```
+## CODE MAP
+| Symbol | Type | Location | Role |
+|--------|------|----------|------|
+| `CONFIG` | Dict | `dataset.py:12` | Global configuration |
+| `JesterDataset` | Class | `dataset.py:49` | Data loader |
+| `LightTSMGRU` | Class | `models.py:123` | TSM + GRU model |
+| `LightTMF3GRU` | Class | `models.py:444` | TMF fusion model |
+| `train_model` | Function | `train.py:559` | Main training loop |
+| `infer_single_video` | Function | `inference.py:96` | Single video inference |
+| `get_config` | Function | `utils/config_loader.py:11` | Load config.json |
+| `build_model` | Function | `utils/model_loader.py:5` | Model factory |
 
-### Utilities
-```bash
-# Calculate model parameters
-python para_cal.py --model_type resnet
+## CONVENTIONS
 
-# Split dataset (create test set from train)
-python split_test_set.py --data_dir dataset --sample_size 5000
-```
-
-## Code Style Guidelines
-
-### Imports
-- Order: standard library → third-party → local modules
-- Example:
+### Import Order
 ```python
 import os
 import argparse
@@ -48,71 +63,63 @@ import torch
 from dataset import CONFIG, JesterDataset
 ```
 
-### Configuration
-- Global config lives in `dataset.py` as `CONFIG` dict
-- Override via command-line arguments using `argparse`
-- Key configs: `data_dir`, `checkpoint_dir`, `batch_size`, `num_frames`, `device`
+### Configuration Pattern
+```python
+config = get_config()  # From config.json
+model.to(config["device"])  # Always use config device
+```
 
-### Naming Conventions
-- Classes: `PascalCase` (e.g., `ResNetVideoModel`, `JesterDataset`)
-- Functions: `snake_case` (e.g., `parse_args`, `train_model`)
-- Constants: `UPPER_CASE` in CONFIG dict
-- Private methods: `_leading_underscore` (e.g., `_sample_indices`)
-
-### Type Annotations
-- Not currently used; optional for new code
-- If adding, use Python 3.9+ syntax: `list[str]`, `dict[str, int]`
+### Model Definition Pattern
+```python
+class LightXXXGRU(nn.Module):
+    def __init__(self, num_classes, n_segment, hidden_dim):
+        # Standard layers: conv1, layer1-3, GRU, fc
+        # Freeze backbone: for param in resnet.parameters(): param.requires_grad = False
+        
+    def forward(self, x):
+        # B, T, C, H, W -> reshape -> CNN -> GRU -> fc
+```
 
 ### Comments
 - Chinese comments acceptable (项目现有中文注释)
 - Use `# MARK:` for section headers
 - Use `# --------------------------` for visual separation
 
-### Error Handling
-- Use try/except for file operations with fallback defaults
-- Example: missing frames fallback to black image
+## ANTI-PATTERNS
+| Pattern | Why Forbidden | Location |
+|---------|--------------|----------|
+| `.cuda()` hardcoded | Not portable | Avoid - use `.to(device)` |
+| `.data` access | Deprecated | Avoid - use `.detach()` |
+| `global` variables | Breaks encapsulation | temporal-shift-module/ only |
+| Direct dict access | No defaults | Use `.get(key, default)` |
 
-### Model Patterns
-- Inherit from `nn.Module`
-- Implement `__init__` and `forward`
-- Use `freeze_backbone=True` to freeze ResNet layers (unfreeze layer4)
+## COMMANDS
+```bash
+# Training
+python train.py --model_type LightTMF3GRU --epochs 50 --batch_size 48
 
-## Project Structure
+# Inference (single video)
+python inference.py --video_path "dataset/Test/100010" --model_type LightTMF3GRU --model_weight "checkpoint/model.pth"
 
+# Inference (dataset)
+python inference.py --csv_path "dataset/Test.csv" --root_dir "dataset/Test" --model_type LightTMF3GRU
+
+# Calculate parameters
+python para_cal.py --model_type LightTMF3GRU
+
+# Split dataset
+python split_test_set.py --data_dir dataset --sample_size 5000
 ```
-.
-├── dataset.py          # Dataset loader, transforms, CONFIG
-├── models.py           # ResNetVideoModel, ResNetGRUVideoModel
-├── train.py            # Training loop with early stopping
-├── inference.py        # Single video & dataset inference
-├── para_cal.py         # Model parameter counter
-├── split_test_set.py   # Dataset splitting utility
-├── checkpoint/         # Model weights & results (gitignored)
-└── dataset/            # Data directory (gitignored)
-```
 
-## Dependencies
-
-Core requirements (inferred from imports):
-- `torch` + `torchvision`
-- `pandas`
-- `numpy`
-- `Pillow` (PIL)
-- `matplotlib`
-- `tqdm`
-
-No formal requirements.txt exists; install manually as needed.
-
-## Device Handling
-
+## DEVICE HANDLING
 Always use `CONFIG["device"]` (auto-detects CUDA/CPU):
 ```python
 model.to(CONFIG["device"])
 inputs = inputs.to(CONFIG["device"])
 ```
 
-## Data Format
-
+## DATA FORMAT
 - Input: Video frames as `.jpg` files in folders
-- CSV format: `video_id`, `frames`, `label_id` (Train/Val) or `id`, `frames` (Test)
+- CSV: `video_id`, `frames`, `label_id` (Train/Val) or `id`, `frames` (Test)
 - Frame naming: `{frame_num:05d}.jpg` (e.g., `00001.jpg`)
+- Num frames: 16 (default), configurable in config.json

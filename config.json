@@ -3,6 +3,7 @@
     
     "common": {
         "model_type": "LightTMF5GRU",
+        "freeze_backbone": false,
         "data_dir": "dataset",
         "checkpoint_dir": "checkpoint",
         "optimizer": "adamw",

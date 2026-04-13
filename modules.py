@@ -832,11 +832,11 @@ class TMF3ResBlock(nn.Module):
         stride: Stride for the first convolution (spatial downsampling).
         n_segment: Number of temporal segments (T).
         reduction: Channel reduction ratio for ME and MGDS. Default 4.
-        fusion_mode: 'A' (Oracle) or 'B' (Dual-path). Default 'A'.
+        fusion_mode: 'A' (Oracle) or 'B' (Dual-path). Default 'B'.
     """
 
     def __init__(self, in_channels, out_channels, stride=1, n_segment=8,
-                 reduction=4, fusion_mode='A'):
+                 reduction=4, fusion_mode='B'):
         super(TMF3ResBlock, self).__init__()
         self.n_segment = n_segment
         self.fusion_mode = fusion_mode
@@ -978,4 +978,173 @@ class TMF3ResBlock(nn.Module):
         out += identity                                           # (B*T, C_out, H_out, W_out)
         out = F.relu(out)
         return out                                                # (B*T, C_out, H_out, W_out)
-    
+
+
+# --------------------------
+# MARK: TMF3Module — Standalone ME + MGDS Temporal Fusion
+# --------------------------
+
+class TMF3Module(nn.Module):
+    """Standalone temporal fusion module: Motion Excitation + MGDS + Fusion.
+
+    Extracts the temporal modeling logic from TMF3ResBlock without the
+    convolutional pipeline or residual connection.  Designed to be inserted
+    into any backbone as a plug-in temporal module.
+
+    The ME pipeline produces channel and spatial attention from inter-frame
+    motion cues.  The pre-sigmoid channel logits drive MGDS's instance-
+    adaptive temporal shift.  Two fusion modes combine the results:
+
+    Fusion Mode A (Oracle, default):
+        mgds_out = MGDS(x, v_pre_sigmoid)
+        out = mgds_out * spatial_weight + x
+
+    Fusion Mode B (Dual-path):
+        mgds_out = MGDS(x, v_pre_sigmoid)
+        out = x * channel_weight * spatial_weight + mgds_out * spatial_weight + x
+
+    Args:
+        channels: Number of input/output channels (C).
+        n_segment: Number of temporal segments (T). Default 8.
+        reduction: Channel reduction ratio for ME and MGDS. Default 4.
+                   Use ``_auto_reduction(channels)`` for automatic scaling.
+        fusion_mode: 'A' (Oracle) or 'B' (Dual-path). Default 'B'.
+    """
+
+    def __init__(self, channels, n_segment=8, reduction=4, fusion_mode='B'):
+        super(TMF3Module, self).__init__()
+        self.channels = channels
+        self.n_segment = n_segment
+        self.fusion_mode = fusion_mode
+
+        # ---- Motion Excitation components ----
+        reduced_channels = channels // reduction
+        self.short_channels = reduced_channels // 2
+        self.long_channels = reduced_channels - self.short_channels
+
+        self.squeeze = nn.Conv2d(channels, reduced_channels,
+                                 kernel_size=1, bias=False)
+        self.me_bn = nn.BatchNorm2d(reduced_channels)
+        self.me_conv = nn.Conv2d(reduced_channels, reduced_channels, kernel_size=3,
+                                  padding=1, groups=reduced_channels, bias=False)
+
+        # Channel path
+        self.expand = nn.Conv2d(reduced_channels, channels,
+                                kernel_size=1, bias=False)
+        self.channel_sigmoid = nn.Sigmoid()
+
+        # Spatial path: single-channel map → 7×7 conv → sigmoid
+        self.spatial_conv = nn.Conv2d(1, 1, kernel_size=7, padding=3, bias=False)
+        self.spatial_sigmoid = nn.Sigmoid()
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+
+        # ---- MGDS module ----
+        self.mgds = MGDS_Module(channels, n_segment, reduction=reduction)
+
+    @staticmethod
+    def _auto_reduction(channels):
+        """Return a sensible reduction ratio based on channel count.
+
+        Returns:
+            4  if channels < 256
+            8  if channels < 1024
+            16 otherwise
+        """
+        if channels < 256:
+            return 4
+        elif channels < 1024:
+            return 8
+        else:
+            return 16
+
+    def _get_me_attention(self, x):
+        """Extract motion attention: pre-sigmoid logits, channel weight, spatial weight.
+
+        Returns:
+            v_pre_sigmoid: (B*T, C, 1, 1) — raw channel logits before sigmoid
+            channel_weight: (B*T, C, 1, 1) — sigmoid of v_pre_sigmoid, values in [0, 1]
+            spatial_weight: (B*T, 1, H, W) — spatial attention, values in [0, 1]
+        """
+        if self.n_segment <= 1:
+            # Guard: no temporal axis → zero attention (identity-like)
+            nt, c, h, w = x.size()
+            v_pre_sigmoid = torch.zeros(nt, c, 1, 1, device=x.device, dtype=x.dtype)
+            channel_weight = torch.zeros(nt, c, 1, 1, device=x.device, dtype=x.dtype)
+            spatial_weight = torch.zeros(nt, 1, h, w, device=x.device, dtype=x.dtype)
+            return v_pre_sigmoid, channel_weight, spatial_weight
+
+        nt, c, h, w = x.size()
+        n_batch = nt // self.n_segment
+
+        # Squeeze: reduce channels
+        x3 = self.squeeze(x)                                    # (B*T, C/r, H, W)
+        x3 = self.me_bn(x3)                                     # (B*T, C/r, H, W)
+
+        # Reshape for temporal operations
+        x3 = x3.view(n_batch, self.n_segment, -1, h, w)         # (B, T, C/r, H, W)
+
+        # Depthwise conv on temporal sequence
+        x3_reshaped = x3.view(nt, -1, h, w)                     # (B*T, C/r, H, W)
+        x3_conv = self.me_conv(x3_reshaped)                      # (B*T, C/r, H, W)
+        x3_conv = x3_conv.view(n_batch, self.n_segment, -1, h, w)  # (B, T, C/r, H, W)
+
+        # Split channels: short-range and long-range diffs
+        d_short = x3.new_zeros(n_batch, self.n_segment, self.short_channels, h, w)
+        if self.short_channels > 0 and self.n_segment > 1:
+            # 短程: conv(X_t) - X_{t-1}; t=0 置零
+            d_short[:, 1:] = (x3_conv[:, 1:, :self.short_channels]
+                              - x3[:, :-1, :self.short_channels])  # (B, T-1, short_ch, H, W)
+
+        d_long = x3.new_zeros(n_batch, self.n_segment, self.long_channels, h, w)
+        if self.long_channels > 0 and self.n_segment > 2:
+            # 长程: conv(X_{t+1}) - X_{t-1}; t=0 和 t=T-1 置零
+            d_long[:, 1:-1] = (x3_conv[:, 2:, self.short_channels:]
+                               - x3[:, :-2, self.short_channels:])  # (B, T-2, long_ch, H, W)
+
+        d = torch.cat([d_short, d_long], dim=2)                  # (B, T, C/r, H, W)
+
+        # ---- Channel Path ----
+        d_channel = d.view(nt, -1, h, w)                         # (B*T, C/r, H, W)
+        channel_pool = self.avg_pool(d_channel)                   # (B*T, C/r, 1, 1)
+        v_pre_sigmoid = self.expand(channel_pool)                 # (B*T, C, 1, 1) — raw logits
+        channel_weight = self.channel_sigmoid(v_pre_sigmoid)      # (B*T, C, 1, 1) — [0, 1]
+
+        # ---- Spatial Path ----
+        d_spatial = d.mean(dim=2, keepdim=True)                   # (B, T, 1, H, W)
+        d_spatial = d_spatial.view(nt, 1, h, w)                   # (B*T, 1, H, W)
+        spatial_weight = self.spatial_conv(d_spatial)              # (B*T, 1, H, W)
+        spatial_weight = self.spatial_sigmoid(spatial_weight)      # (B*T, 1, H, W) — [0, 1]
+
+        return v_pre_sigmoid, channel_weight, spatial_weight
+
+    def forward(self, x):
+        """Apply temporal fusion (ME + MGDS) without conv pipeline or residual.
+
+        Args:
+            x: Input tensor, shape (B*T, C, H, W).
+
+        Returns:
+            Output tensor, shape (B*T, C, H, W) — same spatial/channel dims.
+        """
+        # Identity passthrough when no temporal axis
+        if self.n_segment <= 1:
+            return x
+
+        # ME attention: three outputs
+        v_pre_sigmoid, channel_weight, spatial_weight = self._get_me_attention(x)
+
+        # Fusion
+        if self.fusion_mode == 'A':
+            # Oracle: MGDS gated by spatial attention + residual
+            mgds_out = self.mgds(x, v_pre_sigmoid)                # (B*T, C, H, W)
+            out = mgds_out * spatial_weight + x                   # (B*T, C, H, W)
+        elif self.fusion_mode == 'B':
+            # Dual-path: ME-weighted x + MGDS, both spatially gated
+            mgds_out = self.mgds(x, v_pre_sigmoid)                # (B*T, C, H, W)
+            out = (x * channel_weight * spatial_weight
+                   + mgds_out * spatial_weight + x)               # (B*T, C, H, W)
+        else:
+            raise ValueError(f"Unknown fusion_mode '{self.fusion_mode}', expected 'A' or 'B'")
+
+        return out                                                # (B*T, C, H, W)

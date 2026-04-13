@@ -75,6 +75,7 @@ def main():
     platform_name = get_platform_name()
     print(f"\nPlatform: {platform_name}")
     print(f"=== 模型 [{args.model_type}] 统计信息 ===")
+    print(f"Freeze Backbone (from config): {bool(config.get('freeze_backbone', False))}")
     
     # 创建模型
     model = build_model(args.model_type, config)

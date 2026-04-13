@@ -85,6 +85,7 @@ def setup_training():
     config["weight_decay"] = float(config.get("weight_decay", default_weight_decay))
     config["save_every"] = int(config.get("save_every", 10))
     config["early_stopping"] = bool(config.get("early_stopping", False))
+    config["freeze_backbone"] = bool(config.get("freeze_backbone", False))
     args.model_type = model_type
     
     # 更新配置
@@ -110,6 +111,7 @@ def print_training_info(args, config):
     print(f"Batchsize: {config['batch_size']}")
     print(f"num_workers: {config['num_workers']}, pin_memory: {config['pin_memory']}")
     print(f"Model Type: {args.model_type}")
+    print(f"Freeze Backbone: {config['freeze_backbone']}")
     print(f"Optimizer: {config['optimizer'].upper()}")
     print(f"Weight Decay: {config['weight_decay']}")
     print(f"Data Directory: {config['data_dir']}")

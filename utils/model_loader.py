@@ -9,7 +9,7 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
     hidden_dim = config.get("hidden_dim", 128)
 
     if freeze_backbone is None:
-        freeze_backbone = True
+        freeze_backbone = bool(config.get("freeze_backbone", False))
 
     if model_type == "ResNet18":
         model = ResNet18(
@@ -99,7 +99,56 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
             n_segment=num_frames,
             hidden_dim=hidden_dim,
         )
-
+    elif model_type == "ResNet50_ACSSTMF3":
+        model = ResNet50_ACSSTMF3(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+            freeze_backbone=freeze_backbone,
+            use_gru=False,
+            fusion_mode='B',
+            reduction='auto',
+        )
+    elif model_type == "MobileNetV2_ACSSTMF3":
+        model = MobileNetV2_ACSSTMF3(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            freeze_backbone=freeze_backbone,
+            fusion_mode='B',
+            reduction='auto',
+        )
+    elif model_type == "MobileNetV3Large_ACSSTMF3":
+        model = MobileNetV3Large_ACSSTMF3(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            freeze_backbone=freeze_backbone,
+            fusion_mode='B',
+            reduction='auto',
+        )
+    elif model_type == "MobileNetV3Small_ACSSTMF3":
+        model = MobileNetV3Small_ACSSTMF3(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            freeze_backbone=freeze_backbone,
+            fusion_mode='B',
+            reduction='auto',
+        )
+    elif model_type == "ShuffleNetV2x10_ACSSTMF3":
+        model = ShuffleNetV2x10_ACSSTMF3(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            freeze_backbone=freeze_backbone,
+            fusion_mode='B',
+            reduction='auto',
+        )
+    elif model_type == "ShuffleNetV2x20_ACSSTMF3":
+        model = ShuffleNetV2x20_ACSSTMF3(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            freeze_backbone=freeze_backbone,
+            fusion_mode='B',
+            reduction='auto',
+        )
     else:
         raise ValueError(f"未知的模型类型: {model_type}")
 
