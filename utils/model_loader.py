@@ -195,6 +195,36 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
             fusion_mode='B',
             reduction='auto',
         )
+    elif model_type == "Light_OnlyTMF3_GRU":
+        model = Light_OnlyTMF3_GRU(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+        )
+    elif model_type == "Light_OnlyACSS_GRU":
+        model = Light_OnlyACSS_GRU(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+        )
+    elif model_type == "ResNet50_OnlyTMF3":
+        model = ResNet50_OnlyTMF3(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+            freeze_backbone=freeze_backbone,
+            use_gru=False,
+            fusion_mode='B',
+            reduction='auto',
+        )
+    elif model_type == "ResNet50_OnlyACSS":
+        model = ResNet50_OnlyACSS(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+            freeze_backbone=freeze_backbone,
+            use_gru=False,
+        )
     else:
         raise ValueError(f"未知的模型类型: {model_type}")
 

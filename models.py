@@ -19,6 +19,8 @@ modelList = ['ResNet18', 'LightTSM', 'LightTSMGRU', 'LightTMFGRU', 'TMFin1', 'TM
              'ResNet50_ACSSTMF3', 'MobileNetV2_ACSSTMF3', 'MobileNetV3Large_ACSSTMF3',
              'MobileNetV3Small_ACSSTMF3', 'ShuffleNetV2x10_ACSSTMF3', 'ShuffleNetV2x20_ACSSTMF3',
              'ResNet50_TSM', 'MobileNetV2_TSM', 'ShuffleNetV2x10_TSM',
+             'Light_OnlyTMF3_GRU', 'Light_OnlyACSS_GRU',
+             'ResNet50_OnlyTMF3', 'ResNet50_OnlyACSS',
              ]
 
 
@@ -1438,6 +1440,244 @@ class ShuffleNetV2x20_ACSSTMF3(nn.Module):
         x = x.mean(dim=1)
         x = self.dropout(x)
         out = self.fc(x)
+        return out
+
+
+# --------------------------
+# MARK: Ablation (ACSS/TMF3 单独消融)
+# --------------------------
+
+class Light_OnlyTMF3_GRU(nn.Module):
+    """LightTMF3GRU 消融: 去除浅层ACSS, 保留深层TMF3.
+
+    Architecture:
+        Conv1 -> LightResBlock -> LightResBlock -> TMF3ResBlock -> GRU -> FC
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128, fusion_mode='B'):
+        super(Light_OnlyTMF3_GRU, self).__init__()
+        self.n_segment = n_segment
+        self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(0.5)
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.layer1 = LightResBlock(32, 32, stride=1, n_segment=n_segment)
+        self.layer2 = LightResBlock(32, 64, stride=2, n_segment=n_segment)
+        self.layer3 = TMF3ResBlock(64, 128, stride=2, n_segment=n_segment, reduction=4, fusion_mode=fusion_mode)
+
+        self.gru = nn.GRU(
+            input_size=128,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)
+        x = self.conv1(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = x.view(b, t, -1)
+
+        rnn_out, hidden = self.gru(x)
+        last_hidden = hidden[-1]
+
+        last_hidden = self.dropout(last_hidden)
+        out = self.fc(last_hidden)
+        return out
+
+
+class Light_OnlyACSS_GRU(nn.Module):
+    """LightTMF3GRU 消融: 去除深层TMF3, 保留浅层ACSS.
+
+    Architecture:
+        Conv1 -> ACSSResBlock -> ACSSResBlock -> LightResBlock -> GRU -> FC
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
+        super(Light_OnlyACSS_GRU, self).__init__()
+        self.n_segment = n_segment
+        self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(0.5)
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.layer1 = ACSSResBlock(32, 32, stride=1, n_segment=n_segment)
+        self.layer2 = ACSSResBlock(32, 64, stride=2, n_segment=n_segment)
+        self.layer3 = LightResBlock(64, 128, stride=2, n_segment=n_segment)
+
+        self.gru = nn.GRU(
+            input_size=128,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)
+        x = self.conv1(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = x.view(b, t, -1)
+
+        rnn_out, hidden = self.gru(x)
+        last_hidden = hidden[-1]
+
+        last_hidden = self.dropout(last_hidden)
+        out = self.fc(last_hidden)
+        return out
+
+
+class ResNet50_OnlyTMF3(nn.Module):
+    """ResNet50_ACSSTMF3 消融: 去除浅层ACSS, 保留深层TMF3.
+
+    Architecture:
+        stem -> layer1 -> layer2 -> layer3 -> TMF3 -> layer4 -> pool -> FC
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128,
+                 freeze_backbone=False, use_gru=False, fusion_mode='B', reduction='auto'):
+        super(ResNet50_OnlyTMF3, self).__init__()
+        self.n_segment = n_segment
+        self.use_gru = use_gru
+
+        backbone = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+        self.stem = nn.Sequential(
+            backbone.conv1, backbone.bn1, backbone.relu, backbone.maxpool
+        )
+        self.layer1 = backbone.layer1   # -> 256ch
+        self.layer2 = backbone.layer2   # -> 512ch
+        self.layer3 = backbone.layer3   # -> 1024ch
+        self.layer4 = backbone.layer4   # -> 2048ch
+        feat_dim = 2048
+        tmf3_in_dim = 1024
+
+        red = TMF3Module._auto_reduction(tmf3_in_dim) if reduction == 'auto' else int(reduction)
+        self.tmf3 = TMF3Module(tmf3_in_dim, n_segment, reduction=red, fusion_mode=fusion_mode)
+
+        self.dropout = nn.Dropout(0.5)
+        if use_gru:
+            self.gru = nn.GRU(input_size=feat_dim, hidden_size=hidden_dim,
+                              num_layers=1, batch_first=True)
+            self.fc = nn.Linear(hidden_dim, num_classes)
+        else:
+            self.fc = nn.Linear(feat_dim, num_classes)
+
+        if freeze_backbone:
+            for param in backbone.parameters():
+                param.requires_grad = False
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+        x = x.view(b * t, c, h, w)
+
+        x = self.stem(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.tmf3(x)
+        x = self.layer4(x)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = x.view(b, t, -1)
+
+        if self.use_gru:
+            rnn_out, hidden = self.gru(x)
+            last_hidden = hidden[-1]
+            last_hidden = self.dropout(last_hidden)
+            out = self.fc(last_hidden)
+        else:
+            x = x.mean(dim=1)
+            x = self.dropout(x)
+            out = self.fc(x)
+        return out
+
+
+class ResNet50_OnlyACSS(nn.Module):
+    """ResNet50_ACSSTMF3 消融: 去除深层TMF3, 保留浅层ACSS.
+
+    Architecture:
+        stem -> layer1 -> ACSS -> layer2 -> ACSS -> layer3 -> layer4 -> pool -> FC
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128,
+                 freeze_backbone=False, use_gru=False):
+        super(ResNet50_OnlyACSS, self).__init__()
+        self.n_segment = n_segment
+        self.use_gru = use_gru
+
+        backbone = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+        self.stem = nn.Sequential(
+            backbone.conv1, backbone.bn1, backbone.relu, backbone.maxpool
+        )
+        self.layer1 = backbone.layer1   # -> 256ch
+        self.layer2 = backbone.layer2   # -> 512ch
+        self.layer3 = backbone.layer3   # -> 1024ch
+        self.layer4 = backbone.layer4   # -> 2048ch
+        feat_dim = 2048
+
+        self.acss1 = ACSS_Module(256, n_segment)
+        self.acss2 = ACSS_Module(512, n_segment)
+
+        self.dropout = nn.Dropout(0.5)
+        if use_gru:
+            self.gru = nn.GRU(input_size=feat_dim, hidden_size=hidden_dim,
+                              num_layers=1, batch_first=True)
+            self.fc = nn.Linear(hidden_dim, num_classes)
+        else:
+            self.fc = nn.Linear(feat_dim, num_classes)
+
+        if freeze_backbone:
+            for param in backbone.parameters():
+                param.requires_grad = False
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+        x = x.view(b * t, c, h, w)
+
+        x = self.stem(x)
+        x = self.layer1(x)
+        x = self.acss1(x)
+        x = self.layer2(x)
+        x = self.acss2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = x.view(b, t, -1)
+
+        if self.use_gru:
+            rnn_out, hidden = self.gru(x)
+            last_hidden = hidden[-1]
+            last_hidden = self.dropout(last_hidden)
+            out = self.fc(last_hidden)
+        else:
+            x = x.mean(dim=1)
+            x = self.dropout(x)
+            out = self.fc(x)
         return out
 
 
