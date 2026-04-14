@@ -17,11 +17,10 @@ from pathlib import Path
 
 
 MODEL_LIST = [
-    "MobileNetV2_ACSSTMF3",
-    "MobileNetV3Large_ACSSTMF3",
-    "MobileNetV3Small_ACSSTMF3",
-    "ShuffleNetV2x10_ACSSTMF3",
-    "ShuffleNetV2x20_ACSSTMF3",
+    "ShuffleNetV2x10",
+    "ResNet50_TSM",
+    "MobileNetV2_TSM",
+    "ShuffleNetV2x10_TSM",
 ]
 
 

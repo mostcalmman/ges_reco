@@ -5,6 +5,7 @@ Contains building blocks shared across model architectures:
 - temporal_shift: Zero-parameter temporal modeling via channel shifting (TSM)
 - ConvGRUCell / ConvGRU: Convolutional GRU for spatiotemporal sequence modeling
 - TSMResBlock: Residual block with integrated temporal shift
+- LightResBlock: Residual block without temporal shift
 - TSMMEResBlock: TSM + Motion Excitation (ME after TSM)
 - MEBeforeTSMResBlock: Motion Excitation BEFORE TSM (Scheme A)
 - MELiteBeforeTSMResBlock: Motion Excitation Lite BEFORE TSM (Scheme A)
@@ -221,6 +222,50 @@ class TSMResBlock(nn.Module):
         # Temporal shift before first conv (zero extra params / FLOPs)
         out = temporal_shift(x, self.n_segment)
         out = F.relu(self.bn1(self.conv1(out)))
+        out = self.bn2(self.conv2(out))
+
+        out += identity
+        out = F.relu(out)
+        return out  # (B*T, C_out, H_out, W_out)
+
+
+class LightResBlock(nn.Module):
+    """Light residual block without temporal shift.
+
+    Keeps the same 2x3x3 residual structure as TSMResBlock, but removes
+    temporal_shift before the first convolution.
+
+    Args:
+        in_channels: Input channel count.
+        out_channels: Output channel count.
+        stride: Stride for the first convolution (spatial downsampling).
+        n_segment: Reserved for interface compatibility. Not used.
+    """
+
+    def __init__(self, in_channels, out_channels, stride=1, n_segment=8):
+        super(LightResBlock, self).__init__()
+        self.n_segment = n_segment
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # Projection shortcut when dimensions change
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        identity = self.shortcut(x)
+
+        out = F.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
 
         out += identity
