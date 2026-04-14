@@ -15,9 +15,10 @@ from modules import *
 
 modelList = ['ResNet18', 'LightTSM', 'LightTSMGRU', 'LightTMFGRU', 'TMFin1', 'TMFin2', 'TMFin123', 'ab1', 'ab2', 'ab3',
              'LightTMF2GRU', 'LightTMF25GRU', 'LightTMF26GRU', 'LightTMF3GRU', 'LightTMF4GRU',
-             'ResNet50',
+             'ResNet50', 'MobileNetV2', 'ShuffleNetV2x10',
              'ResNet50_ACSSTMF3', 'MobileNetV2_ACSSTMF3', 'MobileNetV3Large_ACSSTMF3',
              'MobileNetV3Small_ACSSTMF3', 'ShuffleNetV2x10_ACSSTMF3', 'ShuffleNetV2x20_ACSSTMF3',
+             'ResNet50_TSM', 'MobileNetV2_TSM', 'ShuffleNetV2x10_TSM',
              ]
 
 
@@ -912,6 +913,91 @@ class ResNet50(nn.Module):
             out = self.fc(x)
         return out
 
+
+class MobileNetV2(nn.Module):
+    """Plain MobileNetV2 baseline without any temporal module.
+
+    Architecture:
+        MobileNetV2 features -> pool -> temporal mean -> FC
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, freeze_backbone=False):
+        super(MobileNetV2, self).__init__()
+        self.n_segment = n_segment
+
+        backbone = models.mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V2)
+        self.features = backbone.features
+        feat_dim = _get_stage_out_channels(self.features)
+
+        self.dropout = nn.Dropout(0.5)
+        self.fc = nn.Linear(feat_dim, num_classes)
+
+        if freeze_backbone:
+            for param in backbone.parameters():
+                param.requires_grad = False
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+        x = x.view(b * t, c, h, w)
+
+        x = self.features(x)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = x.view(b, t, -1)
+
+        x = x.mean(dim=1)
+        x = self.dropout(x)
+        out = self.fc(x)
+        return out
+
+
+class ShuffleNetV2x10(nn.Module):
+    """Plain ShuffleNetV2 x1.0 baseline without any temporal module.
+
+    Architecture:
+        conv1 -> maxpool -> stage2 -> stage3 -> stage4 -> conv5 -> pool -> temporal mean -> FC
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, freeze_backbone=False):
+        super(ShuffleNetV2x10, self).__init__()
+        self.n_segment = n_segment
+
+        backbone = models.shufflenet_v2_x1_0(weights=ShuffleNet_V2_X1_0_Weights.IMAGENET1K_V1)
+        self.conv1 = backbone.conv1
+        self.maxpool = backbone.maxpool
+        self.stage2 = backbone.stage2
+        self.stage3 = backbone.stage3
+        self.stage4 = backbone.stage4
+        self.conv5 = backbone.conv5
+        feat_dim = 1024
+
+        self.dropout = nn.Dropout(0.5)
+        self.fc = nn.Linear(feat_dim, num_classes)
+
+        if freeze_backbone:
+            for param in backbone.parameters():
+                param.requires_grad = False
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+        x = x.view(b * t, c, h, w)
+
+        x = self.conv1(x)
+        x = self.maxpool(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        x = self.stage4(x)
+        x = self.conv5(x)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = x.view(b, t, -1)
+
+        x = x.mean(dim=1)
+        x = self.dropout(x)
+        out = self.fc(x)
+        return out
+
+
 def _split_mobilenet_by_stride(features):
     """Split a MobileNet features Sequential into stages by stride-2 boundaries.
 
@@ -1293,6 +1379,168 @@ class ShuffleNetV2x20_ACSSTMF3(nn.Module):
         x = self.acss3(x)
         x = self.stage4(x)
         x = self.tmf3(x)
+        x = self.conv5(x)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = x.view(b, t, -1)
+
+        x = x.mean(dim=1)
+        x = self.dropout(x)
+        out = self.fc(x)
+        return out
+
+
+# --------------------------
+# MARK: TSM-only
+# --------------------------
+
+class ResNet50_TSM(nn.Module):
+    """ResNet50 with vanilla TSM inserted before each layer.
+
+    Architecture:
+        stem -> TSM -> layer1 -> TSM -> layer2 -> TSM -> layer3 -> TSM -> layer4
+        -> pool -> temporal mean -> FC
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128,
+                 freeze_backbone=False, use_gru=False):
+        super(ResNet50_TSM, self).__init__()
+        self.n_segment = n_segment
+        self.use_gru = use_gru
+
+        backbone = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+        self.stem = nn.Sequential(
+            backbone.conv1, backbone.bn1, backbone.relu, backbone.maxpool
+        )
+        self.layer1 = backbone.layer1   # -> 256ch
+        self.layer2 = backbone.layer2   # -> 512ch
+        self.layer3 = backbone.layer3   # -> 1024ch
+        self.layer4 = backbone.layer4   # -> 2048ch
+        feat_dim = 2048
+
+        self.dropout = nn.Dropout(0.5)
+        if use_gru:
+            self.gru = nn.GRU(input_size=feat_dim, hidden_size=hidden_dim,
+                              num_layers=1, batch_first=True)
+            self.fc = nn.Linear(hidden_dim, num_classes)
+        else:
+            self.fc = nn.Linear(feat_dim, num_classes)
+
+        if freeze_backbone:
+            for param in backbone.parameters():
+                param.requires_grad = False
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+        x = x.view(b * t, c, h, w)
+
+        x = self.stem(x)
+        x = temporal_shift(x, self.n_segment)
+        x = self.layer1(x)
+        x = temporal_shift(x, self.n_segment)
+        x = self.layer2(x)
+        x = temporal_shift(x, self.n_segment)
+        x = self.layer3(x)
+        x = temporal_shift(x, self.n_segment)
+        x = self.layer4(x)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = x.view(b, t, -1)
+
+        if self.use_gru:
+            rnn_out, hidden = self.gru(x)
+            last_hidden = hidden[-1]
+            last_hidden = self.dropout(last_hidden)
+            out = self.fc(last_hidden)
+        else:
+            x = x.mean(dim=1)
+            x = self.dropout(x)
+            out = self.fc(x)
+        return out
+
+
+class MobileNetV2_TSM(nn.Module):
+    """MobileNetV2 with vanilla TSM inserted before each stage.
+
+    Features are split by stride-2 boundaries (same as ACSS+TMF3 variant).
+    TSM is applied before each stage.
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, freeze_backbone=False):
+        super(MobileNetV2_TSM, self).__init__()
+        self.n_segment = n_segment
+
+        backbone = models.mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V2)
+        stages = _split_mobilenet_by_stride(backbone.features)
+        self.stages = nn.ModuleList(stages)
+
+        feat_dim = _get_stage_out_channels(stages[-1])
+
+        self.dropout = nn.Dropout(0.5)
+        self.fc = nn.Linear(feat_dim, num_classes)
+
+        if freeze_backbone:
+            for param in backbone.parameters():
+                param.requires_grad = False
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+        x = x.view(b * t, c, h, w)
+
+        for stage in self.stages:
+            x = temporal_shift(x, self.n_segment)
+            x = stage(x)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = x.view(b, t, -1)
+
+        x = x.mean(dim=1)
+        x = self.dropout(x)
+        out = self.fc(x)
+        return out
+
+
+class ShuffleNetV2x10_TSM(nn.Module):
+    """ShuffleNetV2 x1.0 with vanilla TSM inserted before each stage.
+
+    Architecture:
+        conv1 -> maxpool -> TSM -> stage2 -> TSM -> stage3 -> TSM -> stage4 -> TSM -> conv5
+        -> pool -> temporal mean -> FC
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, freeze_backbone=False):
+        super(ShuffleNetV2x10_TSM, self).__init__()
+        self.n_segment = n_segment
+
+        backbone = models.shufflenet_v2_x1_0(weights=ShuffleNet_V2_X1_0_Weights.IMAGENET1K_V1)
+        self.conv1 = backbone.conv1
+        self.maxpool = backbone.maxpool
+        self.stage2 = backbone.stage2
+        self.stage3 = backbone.stage3
+        self.stage4 = backbone.stage4
+        self.conv5 = backbone.conv5
+        feat_dim = 1024
+
+        self.dropout = nn.Dropout(0.5)
+        self.fc = nn.Linear(feat_dim, num_classes)
+
+        if freeze_backbone:
+            for param in backbone.parameters():
+                param.requires_grad = False
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+        x = x.view(b * t, c, h, w)
+
+        x = self.conv1(x)
+        x = self.maxpool(x)
+        x = temporal_shift(x, self.n_segment)
+        x = self.stage2(x)
+        x = temporal_shift(x, self.n_segment)
+        x = self.stage3(x)
+        x = temporal_shift(x, self.n_segment)
+        x = self.stage4(x)
+        x = temporal_shift(x, self.n_segment)
         x = self.conv5(x)
 
         x = F.adaptive_avg_pool2d(x, (1, 1))

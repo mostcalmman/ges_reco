@@ -107,6 +107,38 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
             freeze_backbone=freeze_backbone,
             use_gru=False,
         )
+    elif model_type == "MobileNetV2":
+        model = MobileNetV2(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            freeze_backbone=freeze_backbone,
+        )
+    elif model_type == "ShuffleNetV2x10":
+        model = ShuffleNetV2x10(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            freeze_backbone=freeze_backbone,
+        )
+    elif model_type == "ResNet50_TSM":
+        model = ResNet50_TSM(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+            freeze_backbone=freeze_backbone,
+            use_gru=False,
+        )
+    elif model_type == "MobileNetV2_TSM":
+        model = MobileNetV2_TSM(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            freeze_backbone=freeze_backbone,
+        )
+    elif model_type == "ShuffleNetV2x10_TSM":
+        model = ShuffleNetV2x10_TSM(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            freeze_backbone=freeze_backbone,
+        )
     elif model_type == "ResNet50_ACSSTMF3":
         model = ResNet50_ACSSTMF3(
             num_classes=num_classes,
