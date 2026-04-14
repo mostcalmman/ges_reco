@@ -48,20 +48,26 @@ def calculate_flops(model, config):
         tuple: (flops, params) - FLOPs 和参数量 (来自 thop.profile)
     """
     # 从配置读取输入尺寸
-    num_frames = config.get("num_frames", 37)
-    img_size = config.get("img_size", (100, 176))
-    height, width = img_size
+    num_frames = config.get("num_frames", 16)
+    # img_size = config.get("img_size", (100, 176))
+    # height, width = img_size
+    height, width = 100, 100
+    
     
     # 构造 dummy input: (B=1, T, C=3, H, W)
     dummy_input = torch.randn(1, num_frames, 3, height, width)
+
+    model.eval()
     
     # 计算 FLOPs 和参数量
-    flops, params = profile(
+    macs, params = profile(
         model,
         inputs=(dummy_input,),
         verbose=False
     )
     
+    flops = 2 * macs  # 1 MAC = 2 FLOPs
+
     return flops, params
 
 
@@ -91,7 +97,7 @@ def main():
     # 计算 FLOPs
     if THOP_AVAILABLE:
         flops, _ = calculate_flops(model, config)
-        num_frames = config.get("num_frames", 37)
+        num_frames = config.get("num_frames", 16)
         img_size = config.get("img_size", (100, 176))
         
         print(f"\n[计算量统计]")

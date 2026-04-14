@@ -99,6 +99,14 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
             n_segment=num_frames,
             hidden_dim=hidden_dim,
         )
+    elif model_type == "ResNet50":
+        model = ResNet50(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+            freeze_backbone=freeze_backbone,
+            use_gru=False,
+        )
     elif model_type == "ResNet50_ACSSTMF3":
         model = ResNet50_ACSSTMF3(
             num_classes=num_classes,

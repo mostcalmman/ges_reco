@@ -29,7 +29,7 @@ def parse_args():
     parser.add_argument("--csv_path", type=str, default="dataset/Test.csv", help="要推理的 CSV 文件路径(数据集推理)")
     parser.add_argument("--root_dir", type=str, default="dataset/Test", help="要推理的视频图片根目录")
     parser.add_argument("--video_path", type=str, default="", help="单个视频文件夹路径(单视频推理)")
-    parser.add_argument("--model_weight", type=str, required=True, help="模型权重文件路径")
+    parser.add_argument("--model_weight", type=str, default="", help="模型权重文件路径(可选，留空则仅使用 ImageNet 预训练初始化)")
     parser.add_argument("--output", type=str, default="checkpoint/inference_results", help="推理输出路径")
     parser.add_argument("--batch_size", type=int, default=None, help="推理时的 Batch Size")
     return parser.parse_args()
@@ -71,7 +71,7 @@ def resolve_output_paths(output_arg, is_single_video):
     return results_txt_path, csv_path
 
 
-def load_model(model_type, config, device, model_weight_path):
+def load_model(model_type, config, device, model_weight_path=""):
     """
     加载指定类型的模型
     
@@ -90,7 +90,13 @@ def load_model(model_type, config, device, model_weight_path):
         pretrained=False,  # 推理阶段不触发额外预训练权重下载
         device=device,
     )
-    return load_model_weights(model, model_weight_path, device)
+    if model_weight_path:
+        return load_model_weights(model, model_weight_path, device)
+
+    # 未提供 checkpoint：直接使用模型构建时的默认初始化（如 ImageNet 预训练 backbone）
+    model = model.to(device)
+    model.eval()
+    return model
 
 
 def infer_single_video(args, model, device, config):
@@ -298,12 +304,16 @@ def run_inference():
     print(f"正在加载模型并准备推理...")
     print(f"使用设备: {device}")
 
-    if not os.path.exists(args.model_weight):
+    if args.model_weight and (not os.path.exists(args.model_weight)):
         print(f"❌ 找不到模型权重文件: {args.model_weight}")
         return
 
     # 加载模型
     model = load_model(args.model_type, config, device, args.model_weight)
+    if args.model_weight:
+        print(f"已加载 checkpoint: {args.model_weight}")
+    else:
+        print("未提供 checkpoint，将仅使用模型默认初始化（例如 ImageNet 预训练 backbone）。")
     model.eval()
 
     # 执行推理
