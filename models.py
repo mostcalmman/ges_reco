@@ -21,6 +21,7 @@ modelList = ['ResNet18', 'LightTSM', 'LightTSMGRU', 'LightTMFGRU', 'TMFin1', 'TM
              'ResNet50_TSM', 'MobileNetV2_TSM', 'ShuffleNetV2x10_TSM',
              'Light_OnlyTMF3_GRU', 'Light_OnlyACSS_GRU',
              'ResNet50_OnlyTMF3', 'ResNet50_OnlyACSS',
+             'ResNet50_TSN', 'MobileNetV2_TSN',
              ]
 
 
@@ -1840,5 +1841,96 @@ class ShuffleNetV2x10_TSM(nn.Module):
         x = x.mean(dim=1)
         x = self.dropout(x)
         out = self.fc(x)
+        return out
+
+
+# --------------------------
+# MARK: TSN 标准范式验证
+# --------------------------
+
+class ResNet50_TSN(nn.Module):
+    """ResNet50 严格遵循 TSN 标准范式: 每帧独立 Dropout+FC, 再 temporal mean consensus.
+
+    Architecture:
+        stem -> layer1 -> layer2 -> layer3 -> layer4
+        -> pool -> Dropout -> FC (per segment) -> mean consensus
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, freeze_backbone=False):
+        super(ResNet50_TSN, self).__init__()
+        self.n_segment = n_segment
+
+        backbone = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+        self.stem = nn.Sequential(
+            backbone.conv1, backbone.bn1, backbone.relu, backbone.maxpool
+        )
+        self.layer1 = backbone.layer1
+        self.layer2 = backbone.layer2
+        self.layer3 = backbone.layer3
+        self.layer4 = backbone.layer4
+        feat_dim = 2048
+
+        self.dropout = nn.Dropout(0.5)
+        self.fc = nn.Linear(feat_dim, num_classes)
+
+        if freeze_backbone:
+            for param in backbone.parameters():
+                param.requires_grad = False
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+        x = x.view(b * t, c, h, w)
+
+        x = self.stem(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))   # (B*T, 2048, 1, 1)
+        x = x.view(b * t, -1)                  # (B*T, 2048)
+
+        x = self.dropout(x)                    # per-segment dropout
+        x = self.fc(x)                         # (B*T, num_classes)
+        x = x.view(b, t, -1)                   # (B, T, num_classes)
+        out = x.mean(dim=1)                    # (B, num_classes) consensus
+        return out
+
+
+class MobileNetV2_TSN(nn.Module):
+    """MobileNetV2 严格遵循 TSN 标准范式: 每帧独立 Dropout+FC, 再 temporal mean consensus.
+
+    Architecture:
+        MobileNetV2 features -> pool -> Dropout -> FC (per segment) -> mean consensus
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, freeze_backbone=False):
+        super(MobileNetV2_TSN, self).__init__()
+        self.n_segment = n_segment
+
+        backbone = models.mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V2)
+        self.features = backbone.features
+        feat_dim = _get_stage_out_channels(self.features)
+
+        self.dropout = nn.Dropout(0.5)
+        self.fc = nn.Linear(feat_dim, num_classes)
+
+        if freeze_backbone:
+            for param in backbone.parameters():
+                param.requires_grad = False
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+        x = x.view(b * t, c, h, w)
+
+        x = self.features(x)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))   # (B*T, 1280, 1, 1)
+        x = x.view(b * t, -1)                  # (B*T, 1280)
+
+        x = self.dropout(x)                    # per-segment dropout
+        x = self.fc(x)                         # (B*T, num_classes)
+        x = x.view(b, t, -1)                   # (B, T, num_classes)
+        out = x.mean(dim=1)                    # (B, num_classes) consensus
         return out
 

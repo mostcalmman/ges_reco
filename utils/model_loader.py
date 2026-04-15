@@ -225,6 +225,18 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
             freeze_backbone=freeze_backbone,
             use_gru=False,
         )
+    elif model_type == "ResNet50_TSN":
+        model = ResNet50_TSN(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            freeze_backbone=freeze_backbone,
+        )
+    elif model_type == "MobileNetV2_TSN":
+        model = MobileNetV2_TSN(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            freeze_backbone=freeze_backbone,
+        )
     else:
         raise ValueError(f"未知的模型类型: {model_type}")
 
