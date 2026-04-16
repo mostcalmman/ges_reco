@@ -1846,6 +1846,8 @@ class ShuffleNetV2x10_TSM(nn.Module):
 
 # --------------------------
 # MARK: TSN 标准范式验证
+# 之前的实现 TSN 不标准: 标准的是 FC -> Avg, 之前是 Avg -> FC
+# 二者在数学上等价, 参数完全一致, FLOPs影响<0.01%, 可忽略. dropout会导致细微影响, 但先忽略
 # --------------------------
 
 class ResNet50_TSN(nn.Module):
