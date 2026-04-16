@@ -102,7 +102,7 @@ class JesterDataset(Dataset):
             except FileNotFoundError:
                 # 使用元组来创建黑色备用图像 (height, width)
                 config = get_config()
-                img_size = config.get("img_size", (100, 176))
+                img_size = config.get("img_size", (100, 100))
                 img = Image.new('RGB', (img_size[1], img_size[0]), color=0)
                 
             if self.transform:
@@ -130,7 +130,7 @@ def get_train_transform(img_size=(100, 176), normalize_mean=None, normalize_std=
     if normalize_std is None:
         normalize_std = [0.229, 0.224, 0.225]
 
-    h = 100
+    h = img_size[0] if isinstance(img_size, (list, tuple)) else img_size
     return transforms.Compose([
         transforms.Resize(h),
         # 加了仿射模型会倒退, 先不加
@@ -164,7 +164,7 @@ def get_val_transform(img_size=(100, 176), normalize_mean=None, normalize_std=No
     if normalize_std is None:
         normalize_std = [0.229, 0.224, 0.225]
         
-    h = 100
+    h = img_size[0] if isinstance(img_size, (list, tuple)) else img_size
     return transforms.Compose([
         transforms.Resize(h),
         transforms.CenterCrop(h),
