@@ -40,6 +40,12 @@ def get_config(config_path="config.json"):
     
     merged_config.update(platform_config)
     
+    # 合并数据集配置（dataset profile 覆盖 common 中的 data_dir / num_classes 等）
+    dataset_name = merged_config.get("dataset")
+    if dataset_name and "datasets" in config_data:
+        dataset_config = config_data["datasets"].get(dataset_name, {})
+        merged_config.update(dataset_config)
+    
     # 自动检测并添加 device 配置
     merged_config["device"] = "cuda" if torch.cuda.is_available() else "cpu"
     
