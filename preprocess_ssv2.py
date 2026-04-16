@@ -11,9 +11,13 @@ import os
 import json
 import csv
 import argparse
+import shutil
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import cv2
+
+
+DONE_MARKER = "_EXTRACT_DONE"
 
 
 def parse_args():
@@ -92,17 +96,23 @@ def load_test_answers(csv_path, template_to_id):
 def extract_frames(args_tuple):
     """提取单个视频的所有帧为 JPG，支持断点续跑"""
     video_path, output_folder, jpg_quality = args_tuple
+    marker_path = os.path.join(output_folder, DONE_MARKER)
 
-    # 跳过已经提取过的视频
+    # 仅当存在完成标记时才跳过；避免把半截目录误判为完成。
     if os.path.exists(output_folder):
-        existing = [f for f in os.listdir(output_folder) if f.endswith(".jpg")]
-        if existing:
-            return len(existing), True  # (frame_count, skipped)
+        if os.path.exists(marker_path):
+            existing = [f for f in os.listdir(output_folder) if f.endswith(".jpg")]
+            if existing:
+                return len(existing), True  # (frame_count, skipped)
+        else:
+            # 目录存在但没有完成标记：视为中断残留，清理后重提取。
+            shutil.rmtree(output_folder, ignore_errors=True)
 
     os.makedirs(output_folder, exist_ok=True)
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
+        shutil.rmtree(output_folder, ignore_errors=True)
         return 0, False
 
     frame_idx = 0
@@ -115,6 +125,14 @@ def extract_frames(args_tuple):
         cv2.imwrite(frame_path, frame, [cv2.IMWRITE_JPEG_QUALITY, jpg_quality])
 
     cap.release()
+
+    if frame_idx <= 0:
+        shutil.rmtree(output_folder, ignore_errors=True)
+        return 0, False
+
+    with open(marker_path, "w", encoding="utf-8") as f:
+        f.write(str(frame_idx))
+
     return frame_idx, False
 
 
