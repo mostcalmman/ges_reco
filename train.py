@@ -66,9 +66,9 @@ def setup_distributed():
         return device
 
     local_rank = int(os.environ["LOCAL_RANK"])
-    dist.init_process_group(backend="nccl")
     torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")
+    dist.init_process_group(backend="nccl", device_id=device)
 
     if local_rank == 0:
         print(f"✓ 分布式训练已初始化: world_size={dist.get_world_size()}, backend=nccl")
