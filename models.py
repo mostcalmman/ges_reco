@@ -13,7 +13,7 @@ from torchvision.models import ShuffleNet_V2_X1_0_Weights, ShuffleNet_V2_X2_0_We
 
 from modules import *
 
-modelList = ['ResNet18', 'LightTSM', 'LightTSMGRU', 'LightTMFGRU', 'TMFin1', 'TMFin2', 'TMFin123', 'ab1', 'ab2', 'ab3', 'LightResNet',
+modelList = ['ResNet18', 'LightTSM', 'LightTSMGRU', 'LightTMFGRU', 'TMFin1', 'TMFin2', 'TMFin123', 'ab1', 'ab2', 'LightTSMGRU', 'LightResNet',
              'LightTMF2GRU', 'LightTMF25GRU', 'LightTMF26GRU', 'LightTMF3GRU', 'LightTMF4GRU',
              'ResNet50', 'MobileNetV2', 'ShuffleNetV2x10',
              'ResNet50_ACSSTMF3', 'MobileNetV2_ACSSTMF3', 'MobileNetV3Large_ACSSTMF3',
@@ -450,7 +450,7 @@ class LightTMF26GRU(nn.Module):
         out = self.fc(last_hidden)              # (B, num_classes)
         return out
     
-
+# MARK: publish
 class LightTMF3GRU(nn.Module):
     """
     TMF3: ACSS + TMF3 + GRU
@@ -801,12 +801,12 @@ class ab2(nn.Module):
         return out
 
 
-class ab3(nn.Module):
+class LightTSMGRU(nn.Module):
     """
-    和 ab3 相比去掉了TSM
+    原 ab3
     """
     def __init__(self, num_classes=27, n_segment=8, hidden_dim=128):
-        super(ab3, self).__init__()
+        super(LightTSMGRU, self).__init__()
         self.n_segment = n_segment
         self.hidden_dim = hidden_dim
         self.dropout = nn.Dropout(0.5)

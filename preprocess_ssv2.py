@@ -28,9 +28,9 @@ def parse_args():
                         help="输出目录（默认 dataset/SSv2）")
     parser.add_argument("--labels_dir", type=str, default=None,
                         help="标签目录（默认 {output_dir}/labels）")
-    parser.add_argument("--workers", type=int, default=8,
+    parser.add_argument("--workers", type=int, default=16,
                         help="并行提取的进程数")
-    parser.add_argument("--jpg_quality", type=int, default=95,
+    parser.add_argument("--jpg_quality", type=int, default=100,
                         help="JPEG 保存质量 (1-100)")
     parser.add_argument("--splits", type=str, nargs="+",
                         default=["Train", "Validation", "Test"],

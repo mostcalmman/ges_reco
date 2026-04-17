@@ -93,8 +93,8 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
             n_segment=num_frames,
             hidden_dim=hidden_dim,
         )
-    elif model_type == "ab3":
-        model = ab3(
+    elif model_type == "LightTSMGRU":
+        model = LightTSMGRU(
             num_classes=num_classes,
             n_segment=num_frames,
             hidden_dim=hidden_dim,

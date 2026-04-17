@@ -18,9 +18,11 @@ from dataset import (
 )
 from models import modelList
 
-LR_MILESTONES = [10, 20, 25]
+LR_MILESTONES = [30, 40, 45]
 LR_GAMMA = 0.1
 OPTIMIZER_CHOICES = ['sgd', 'adam', 'adamw']
+SCHEDULER_CHOICES = ['cosine', 'multistep']
+DEFAULT_SCHEDULER = 'cosine'
 
 
 # ============================================================
@@ -42,6 +44,13 @@ def parse_args():
         type=str,
         default=None,
         help="模型和预测结果保存目录；若不传则使用 config.checkpoint_dir/{最终model_type}",
+    )
+    parser.add_argument(
+        "--scheduler",
+        type=str,
+        choices=SCHEDULER_CHOICES,
+        default=None,
+        help="学习率调度器；可选 cosine 或 multistep（若不传则使用 config.json）",
     )
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training from")
     return parser.parse_args()
@@ -85,14 +94,24 @@ def setup_training():
             f"可选值: {OPTIMIZER_CHOICES}"
         )
     default_weight_decay = 1e-3 if optimizer_name in ('adam', 'adamw') else 5e-4
+    scheduler_name_in_config = str(config.get("scheduler", DEFAULT_SCHEDULER)).lower()
+    scheduler_name = args.scheduler if args.scheduler is not None else scheduler_name_in_config
+    if scheduler_name not in SCHEDULER_CHOICES:
+        raise ValueError(
+            f"config.json 中的 scheduler 无效: {scheduler_name}，"
+            f"可选值: {SCHEDULER_CHOICES}"
+        )
 
     config["optimizer"] = optimizer_name
+    config["scheduler"] = scheduler_name
+    config["cosine_eta_min"] = float(config.get("cosine_eta_min", 1e-5))
     config["weight_decay"] = float(config.get("weight_decay", default_weight_decay))
     config["save_every"] = int(config.get("save_every", 10))
     config["early_stopping"] = bool(config.get("early_stopping", False))
     config["freeze_backbone"] = bool(config.get("freeze_backbone", False))
     config["model_type"] = model_type
     args.model_type = model_type
+    args.scheduler = scheduler_name
 
     if args.checkpoint_dir is None:
         args.checkpoint_dir = os.path.join(config["checkpoint_dir"], model_type)
@@ -122,6 +141,10 @@ def print_training_info(args, config):
     print(f"Model Type: {args.model_type}")
     print(f"Freeze Backbone: {config['freeze_backbone']}")
     print(f"Optimizer: {config['optimizer'].upper()}")
+    if config['scheduler'] == 'multistep':
+        print(f"Scheduler: MultiStepLR (milestones={LR_MILESTONES}, gamma={LR_GAMMA})")
+    else:
+        print(f"Scheduler: CosineAnnealingLR (T_max={config['num_epochs']}, eta_min={config['cosine_eta_min']})")
     print(f"Weight Decay: {config['weight_decay']}")
     print(f"Data Directory: {config['data_dir']}")
     print(f"Checkpoint Directory: {config['checkpoint_dir']}")
@@ -204,13 +227,36 @@ def build_optimizer(optimizer_name, model, base_lr, weight_decay):
     )
 
 
+def get_scheduler_class_name(scheduler_name):
+    """根据配置名称返回调度器类名"""
+    if scheduler_name == 'multistep':
+        return 'MultiStepLR'
+    return 'CosineAnnealingLR'
+
+
+def build_scheduler(scheduler_name, optimizer, num_epochs, cosine_eta_min):
+    """根据配置创建学习率调度器"""
+    if scheduler_name == 'multistep':
+        return torch.optim.lr_scheduler.MultiStepLR(
+            optimizer,
+            milestones=LR_MILESTONES,
+            gamma=LR_GAMMA,
+        )
+
+    return torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=num_epochs,
+        eta_min=cosine_eta_min,
+    )
+
+
 def infer_lr_by_epoch(base_lr, start_epoch, milestones, gamma):
     """根据即将开始的 epoch 自动推导当前阶段学习率"""
     decay_count = sum(1 for milestone in milestones if start_epoch >= milestone)
     return base_lr * (gamma ** decay_count)
 
 
-def load_checkpoint_if_needed(args, model, optimizer, device, base_lr, milestones, gamma):
+def load_checkpoint_if_needed(args, model, optimizer, device, base_lr, scheduler_name, milestones, gamma):
     """
     如果需要，从检查点恢复训练状态
     
@@ -245,14 +291,25 @@ def load_checkpoint_if_needed(args, model, optimizer, device, base_lr, milestone
             
             start_epoch = checkpoint.get('epoch', 0) + 1
             scheduler_state_dict = checkpoint.get('scheduler_state_dict')
+            checkpoint_scheduler_type = checkpoint.get('scheduler_type')
+            expected_scheduler_type = get_scheduler_class_name(scheduler_name)
+            if checkpoint_scheduler_type and checkpoint_scheduler_type != expected_scheduler_type:
+                print(
+                    f"⚠️ 检查点调度器类型为 {checkpoint_scheduler_type}，当前为 {expected_scheduler_type}，"
+                    "跳过调度器状态恢复"
+                )
+                scheduler_state_dict = None
 
-            auto_lr = infer_lr_by_epoch(base_lr, start_epoch, milestones, gamma)
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = auto_lr
-            print(
-                f"✓ 根据 checkpoint epoch={checkpoint.get('epoch', 0)} 自动设置学习率为: {auto_lr:.6f} "
-                f"(milestones={milestones}, gamma={gamma})"
-            )
+            if scheduler_name == 'multistep':
+                auto_lr = infer_lr_by_epoch(base_lr, start_epoch, milestones, gamma)
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = auto_lr
+                print(
+                    f"✓ 根据 checkpoint epoch={checkpoint.get('epoch', 0)} 自动设置学习率为: {auto_lr:.6f} "
+                    f"(milestones={milestones}, gamma={gamma})"
+                )
+            else:
+                print("✓ 当前使用 CosineAnnealingLR，将通过调度器状态或起始 epoch 自动对齐学习率")
             
             train_losses = checkpoint.get('train_losses', [])
             train_accs = checkpoint.get('train_accs', [])
@@ -393,6 +450,7 @@ def save_intermediate_checkpoint(args, config, model, optimizer, scheduler, hist
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'optimizer_type': optimizer.__class__.__name__,
+        'scheduler_type': scheduler.__class__.__name__,
         'scheduler_state_dict': scheduler.state_dict(),
         'train_losses': history['train_losses'],
         'train_accs': history['train_accs'],
@@ -589,13 +647,14 @@ def train_model():
     (history['train_losses'], history['train_accs'], 
      history['val_losses'], history['val_accs'], 
      best_val_acc, start_epoch, scheduler_state_dict) = load_checkpoint_if_needed(
-        args, model, optimizer, config["device"], base_lr, LR_MILESTONES, LR_GAMMA
+        args, model, optimizer, config["device"], base_lr, config["scheduler"], LR_MILESTONES, LR_GAMMA
     )
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    scheduler = build_scheduler(
+        config["scheduler"],
         optimizer,
-        T_max=config["num_epochs"],
-        eta_min=1e-5
+        config["num_epochs"],
+        config["cosine_eta_min"],
     )
 
     if scheduler_state_dict is not None:
@@ -613,7 +672,10 @@ def train_model():
         print(f"优化器: {optimizer_name} | 初始学习率: {optimizer.param_groups[0]['lr']:.6f} | weight_decay: {weight_decay}")
     else:
         print(f"优化器: {optimizer_name} | 初始学习率: {optimizer.param_groups[0]['lr']:.6f} | momentum: 0.9 | weight_decay: {weight_decay}")
-    print(f"学习率策略: MultiStepLR, milestones={LR_MILESTONES}, gamma={LR_GAMMA}")
+    if config["scheduler"] == 'multistep':
+        print(f"学习率策略: MultiStepLR, milestones={LR_MILESTONES}, gamma={LR_GAMMA}")
+    else:
+        print(f"学习率策略: CosineAnnealingLR, T_max={config['num_epochs']}, eta_min={config['cosine_eta_min']}")
     
     # ---------- 2. 训练循环 ----------
     for epoch in range(start_epoch, config["num_epochs"]):

@@ -49,6 +49,7 @@ def calculate_flops(model, config):
     """
     # 从配置读取输入尺寸
     num_frames = config.get("num_frames", 16)
+    num_frames = 16
     # img_size = config.get("img_size", (100, 176))
     # height, width = img_size
     height, width = 100, 100
