@@ -444,6 +444,17 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, epoch, nu
     
     avg_loss = train_loss / len(train_loader)
     accuracy = 100. * train_correct / train_total
+
+    # 多卡: 汇总训练指标，使记录的 loss/acc 反映全量训练数据
+    if is_dist():
+        stats = torch.tensor(
+            [train_loss, float(train_correct), float(train_total)],
+            dtype=torch.float64, device=device
+        )
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+        avg_loss = stats[0].item() / get_world_size() / len(train_loader)
+        accuracy = 100. * stats[1].item() / max(stats[2].item(), 1)
+
     return avg_loss, accuracy
 
 
@@ -504,7 +515,7 @@ def should_early_stop(epoch, num_epochs, val_acc, best_val_acc, early_stopping_e
     
     if epoch + 1 >= int(0.7 * num_epochs):
         if val_acc < best_val_acc:
-            print(f"⚠️ 触发提前停止：当前验证集准确率({val_acc:.2f}%) 低于历史最佳({best_val_acc:.2f}%)")
+            dist_print(f"⚠️ 触发提前停止：当前验证集准确率({val_acc:.2f}%) 低于历史最佳({best_val_acc:.2f}%)")
             return True
     return False
 
@@ -723,13 +734,10 @@ def train_model():
     args, config = setup_training()
     config["device"] = device  # 覆盖为当前进程的设备
 
-    # 多卡资源调整: 避免 num_workers × world_size 进程导致内存溢出
-    # 单卡 16 workers 占 67/90G 内存, 8 卡需降至 ~2 workers/进程 保持总量相当
+    # 多卡信息提示（num_workers / prefetch_factor 是每个进程各自的配置，无需缩减）
     if world_size > 1:
-        config["num_workers"] = max(2, config["num_workers"] // world_size)
-        config["prefetch_factor"] = max(2, config["prefetch_factor"] // world_size)
-        dist_print(f"✓ 多卡资源调整: num_workers={config['num_workers']}/进程, "
-                   f"prefetch_factor={config['prefetch_factor']}, "
+        dist_print(f"✓ 分布式训练: {world_size} GPUs, "
+                   f"每进程 num_workers={config['num_workers']}, prefetch_factor={config['prefetch_factor']}, "
                    f"有效 batch_size={config['batch_size']} × {world_size} = {config['batch_size'] * world_size}")
         dist_print(f"💡 提示: 有效批量增大为 {world_size} 倍, "
                    f"建议在 config.json 中将学习率相应调大 (线性缩放规则: lr × {world_size})")
