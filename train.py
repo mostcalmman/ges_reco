@@ -873,3 +873,11 @@ if __name__ == "__main__":
     train_model()
 
 # python train.py --checkpoint_dir ./checkpoint/ultraLight
+# # 单卡（和以前完全一样）
+# python train.py --model_type ResNet50_ACSSTMF3
+
+# # 8卡
+# torchrun --nproc_per_node=8 train.py --model_type ResNet50_ACSSTMF3
+
+# # 4卡
+# torchrun --nproc_per_node=4 train.py --model_type ResNet50_ACSSTMF3
