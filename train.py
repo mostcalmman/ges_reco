@@ -763,11 +763,10 @@ def train_model():
         args, model, optimizer, device, base_lr, config["scheduler"], LR_MILESTONES, LR_GAMMA
     )
 
-    # 多卡: SyncBatchNorm + DDP 包装（必须在 load_checkpoint 之后）
+    # 多卡: DDP 包装（必须在 load_checkpoint 之后）
     if world_size > 1:
-        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
         model = DDP(model, device_ids=[device.index])
-        dist_print(f"✓ 模型已包装为 DDP + SyncBatchNorm")
+        dist_print(f"✓ 模型已包装为 DDP")
 
     scheduler = build_scheduler(
         config["scheduler"],
