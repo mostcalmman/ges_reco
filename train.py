@@ -5,7 +5,12 @@ from datetime import datetime
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from utils import get_config, get_platform_name, is_windows, is_linux, build_model
@@ -23,6 +28,61 @@ LR_GAMMA = 0.1
 OPTIMIZER_CHOICES = ['sgd', 'adam', 'adamw']
 SCHEDULER_CHOICES = ['cosine', 'multistep']
 DEFAULT_SCHEDULER = 'cosine'
+
+
+# ============================================================
+# 分布式训练辅助函数
+# ============================================================
+
+def is_dist():
+    """是否处于分布式训练模式"""
+    return dist.is_available() and dist.is_initialized()
+
+def get_rank():
+    return dist.get_rank() if is_dist() else 0
+
+def get_world_size():
+    return dist.get_world_size() if is_dist() else 1
+
+def is_main_process():
+    return get_rank() == 0
+
+def dist_print(*args, **kwargs):
+    """仅主进程打印"""
+    if is_main_process():
+        print(*args, **kwargs)
+
+def setup_distributed():
+    """
+    初始化分布式训练环境（自动检测）。
+    - torchrun 启动: 进入 DDP 模式，每个进程绑定一张 GPU
+    - python train.py 启动: 单卡模式
+
+    Returns:
+        device: 当前进程使用的设备
+    """
+    if "LOCAL_RANK" not in os.environ:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        return device
+
+    local_rank = int(os.environ["LOCAL_RANK"])
+    dist.init_process_group(backend="nccl")
+    torch.cuda.set_device(local_rank)
+    device = torch.device(f"cuda:{local_rank}")
+
+    if local_rank == 0:
+        print(f"✓ 分布式训练已初始化: world_size={dist.get_world_size()}, backend=nccl")
+
+    return device
+
+def cleanup_distributed():
+    """清理分布式训练环境"""
+    if is_dist():
+        dist.destroy_process_group()
+
+def unwrap_model(model):
+    """获取原始模型（去除 DDP 包装）"""
+    return model.module if isinstance(model, DDP) else model
 
 
 # ============================================================
@@ -120,13 +180,19 @@ def setup_training():
     config["checkpoint_dir"] = args.checkpoint_dir
     
     # 创建检查点目录
-    os.makedirs(config["checkpoint_dir"], exist_ok=True)
+    if is_main_process():
+        os.makedirs(config["checkpoint_dir"], exist_ok=True)
 
-    # 在训练开始前备份本次配置文件
-    backup_config_to_checkpoint("config.json", config["checkpoint_dir"])
+        # 在训练开始前备份本次配置文件
+        backup_config_to_checkpoint("config.json", config["checkpoint_dir"])
+
+    # 多卡时等待 rank 0 创建目录完成
+    if is_dist():
+        dist.barrier()
     
     # 打印训练配置信息
-    print_training_info(args, config)
+    if is_main_process():
+        print_training_info(args, config)
     
     return args, config
 
@@ -134,8 +200,12 @@ def setup_training():
 def print_training_info(args, config):
     """打印训练配置信息"""
     platform_name = get_platform_name()
+    world_size = get_world_size()
     print(f"Platform: {platform_name}")
     print(f"Using device: {config['device']}")
+    if world_size > 1:
+        print(f"分布式训练: {world_size} GPUs, 每卡 batch_size={config['batch_size']}, "
+              f"有效 batch_size={config['batch_size'] * world_size}")
     print(f"Batchsize: {config['batch_size']}")
     print(f"num_workers: {config['num_workers']}, pin_memory: {config['pin_memory']}")
     print(f"Model Type: {args.model_type}")
@@ -162,7 +232,7 @@ def create_dataloaders(config):
         config: 配置字典
         
     Returns:
-        tuple: (train_loader, val_loader)
+        tuple: (train_loader, val_loader, train_sampler)
     """
     # 根据配置创建 transforms
     img_size = tuple(config.get("img_size", (100, 176)))
@@ -189,11 +259,22 @@ def create_dataloaders(config):
         sampling_mode=SAMPLING_UNIFORM,
     )
 
+    # 分布式训练: 使用 DistributedSampler
+    train_sampler = None
+    val_sampler = None
+    shuffle_train = True
+
+    if is_dist():
+        train_sampler = DistributedSampler(train_dataset, shuffle=True)
+        val_sampler = DistributedSampler(val_dataset, shuffle=False)
+        shuffle_train = False  # sampler 负责打乱
+
     # 创建数据加载器
     train_loader = DataLoader(
         train_dataset, 
         batch_size=config["batch_size"], 
-        shuffle=True, 
+        shuffle=shuffle_train, 
+        sampler=train_sampler,
         num_workers=config["num_workers"], 
         pin_memory=config["pin_memory"], 
         prefetch_factor=config["prefetch_factor"]
@@ -202,12 +283,13 @@ def create_dataloaders(config):
         val_dataset, 
         batch_size=config["batch_size"], 
         shuffle=False, 
+        sampler=val_sampler,
         num_workers=config["num_workers"], 
         pin_memory=config["pin_memory"], 
         prefetch_factor=config["prefetch_factor"]
     )
     
-    return train_loader, val_loader
+    return train_loader, val_loader, train_sampler
 
 
 def build_optimizer(optimizer_name, model, base_lr, weight_decay):
@@ -277,24 +359,24 @@ def load_checkpoint_if_needed(args, model, optimizer, device, base_lr, scheduler
     
     if args.resume is not None:
         if os.path.exists(args.resume):
-            print(f"正在从检查点恢复: {args.resume}")
+            dist_print(f"正在从检查点恢复: {args.resume}")
             checkpoint = torch.load(args.resume, map_location=device)
             model.load_state_dict(checkpoint['model_state_dict'])
             checkpoint_optimizer_type = checkpoint.get('optimizer_type')
             if checkpoint_optimizer_type and checkpoint_optimizer_type != optimizer.__class__.__name__:
-                print(f"⚠️ 检查点优化器类型为 {checkpoint_optimizer_type}，当前为 {optimizer.__class__.__name__}，跳过优化器状态恢复")
+                dist_print(f"⚠️ 检查点优化器类型为 {checkpoint_optimizer_type}，当前为 {optimizer.__class__.__name__}，跳过优化器状态恢复")
             elif 'optimizer_state_dict' in checkpoint:
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-                print("✓ 已恢复优化器状态")
+                dist_print("✓ 已恢复优化器状态")
             else:
-                print("⚠️ 检查点中没有 optimizer_state_dict，使用当前优化器默认状态")
+                dist_print("⚠️ 检查点中没有 optimizer_state_dict，使用当前优化器默认状态")
             
             start_epoch = checkpoint.get('epoch', 0) + 1
             scheduler_state_dict = checkpoint.get('scheduler_state_dict')
             checkpoint_scheduler_type = checkpoint.get('scheduler_type')
             expected_scheduler_type = get_scheduler_class_name(scheduler_name)
             if checkpoint_scheduler_type and checkpoint_scheduler_type != expected_scheduler_type:
-                print(
+                dist_print(
                     f"⚠️ 检查点调度器类型为 {checkpoint_scheduler_type}，当前为 {expected_scheduler_type}，"
                     "跳过调度器状态恢复"
                 )
@@ -304,21 +386,21 @@ def load_checkpoint_if_needed(args, model, optimizer, device, base_lr, scheduler
                 auto_lr = infer_lr_by_epoch(base_lr, start_epoch, milestones, gamma)
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = auto_lr
-                print(
+                dist_print(
                     f"✓ 根据 checkpoint epoch={checkpoint.get('epoch', 0)} 自动设置学习率为: {auto_lr:.6f} "
                     f"(milestones={milestones}, gamma={gamma})"
                 )
             else:
-                print("✓ 当前使用 CosineAnnealingLR，将通过调度器状态或起始 epoch 自动对齐学习率")
+                dist_print("✓ 当前使用 CosineAnnealingLR，将通过调度器状态或起始 epoch 自动对齐学习率")
             
             train_losses = checkpoint.get('train_losses', [])
             train_accs = checkpoint.get('train_accs', [])
             val_losses = checkpoint.get('val_losses', [])
             val_accs = checkpoint.get('val_accs', [])
             best_val_acc = checkpoint.get('best_val_acc', 0.0)
-            print(f"✓ 已从检查点恢复训练: 起始 epoch {start_epoch}")
+            dist_print(f"✓ 已从检查点恢复训练: 起始 epoch {start_epoch}")
         else:
-            print(f"⚠️ 检查点文件不存在: {args.resume}，从头开始训练")
+            dist_print(f"⚠️ 检查点文件不存在: {args.resume}，从头开始训练")
     
     return train_losses, train_accs, val_losses, val_accs, best_val_acc, start_epoch, scheduler_state_dict
 
@@ -353,8 +435,8 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, epoch, nu
         train_total += labels.size(0)
         train_correct += predicted.eq(labels).sum().item()
         
-        # 每 10 个 batch 输出一次训练进度
-        if (i + 1) % 10 == 0 or (i + 1) == len(train_loader):
+        # 每 10 个 batch 输出一次训练进度（仅主进程）
+        if is_main_process() and ((i + 1) % 10 == 0 or (i + 1) == len(train_loader)):
             print(f"Epoch [{epoch+1}/{num_epochs}], "
                   f"Step [{i+1}/{len(train_loader)}], "
                   f"Loss: {loss.item():.4f}, "
@@ -367,7 +449,7 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, epoch, nu
 
 def validate(model, val_loader, criterion, device):
     """
-    在验证集上评估模型
+    在验证集上评估模型（多卡时自动 all-reduce 汇总）
     
     Returns:
         tuple: (avg_loss, accuracy)
@@ -388,8 +470,19 @@ def validate(model, val_loader, criterion, device):
             val_total += labels.size(0)
             val_correct += predicted.eq(labels).sum().item()
     
+    # 多卡: 汇总所有 GPU 的验证统计量
+    if is_dist():
+        stats = torch.tensor(
+            [val_loss, float(val_correct), float(val_total), float(len(val_loader))],
+            dtype=torch.float64, device=device
+        )
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+        val_loss = stats[0].item() / get_world_size()  # loss 取各 GPU 平均
+        val_correct = stats[1].item()
+        val_total = stats[2].item()
+    
     avg_loss = val_loss / len(val_loader)
-    accuracy = 100. * val_correct / val_total
+    accuracy = 100. * val_correct / max(val_total, 1)
     return avg_loss, accuracy
 
 
@@ -423,17 +516,12 @@ def should_early_stop(epoch, num_epochs, val_acc, best_val_acc, early_stopping_e
 def save_intermediate_checkpoint(args, config, model, optimizer, scheduler, history, epoch, best_val_acc):
     """
     保存中间检查点（模型、历史记录、曲线图、测试结果）
-    
-    Args:
-        args: 命令行参数
-        config: 配置字典
-        model: 模型实例
-        optimizer: 优化器
-        scheduler: 学习率调度器
-        history: 训练历史字典
-        epoch: 当前 epoch（0-based）
-        best_val_acc: 最佳验证准确率
+    仅在主进程中执行。
     """
+    if not is_main_process():
+        return
+
+    raw_model = unwrap_model(model)
     print(f"\n--- 保存周期检查点 (Epoch {epoch+1}) ---")
     
     # 创建子目录
@@ -447,7 +535,7 @@ def save_intermediate_checkpoint(args, config, model, optimizer, scheduler, hist
     # 保存模型检查点
     checkpoint = {
         'epoch': epoch,
-        'model_state_dict': model.state_dict(),
+        'model_state_dict': raw_model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'optimizer_type': optimizer.__class__.__name__,
         'scheduler_type': scheduler.__class__.__name__,
@@ -470,9 +558,9 @@ def save_intermediate_checkpoint(args, config, model, optimizer, scheduler, hist
     plot_training_curves(history, os.path.join(checkpoint_subdir, f"training_curves_epoch_{epoch+1}.png"))
     
     # 运行测试集评估并保存结果
-    test_loss, test_acc = evaluate_test_set(config, model)
+    test_loss, test_acc = evaluate_test_set(config, raw_model)
     save_result_txt(
-        args.model_type, model, history, best_val_acc,
+        args.model_type, raw_model, history, best_val_acc,
         os.path.join(checkpoint_subdir, "result.txt"),
         test_loss=test_loss, test_acc=test_acc
     )
@@ -626,13 +714,30 @@ def evaluate_test_set(config, model):
 # ============================================================
 
 def train_model():
-    """主训练流程"""
+    """主训练流程（自动适配单卡/多卡）"""
+    # ---------- 0. 分布式初始化 ----------
+    device = setup_distributed()
+    world_size = get_world_size()
+
     # ---------- 1. 初始化 ----------
     args, config = setup_training()
-    train_loader, val_loader = create_dataloaders(config)
-    model = build_model(args.model_type, config, device=config["device"])
+    config["device"] = device  # 覆盖为当前进程的设备
+
+    # 多卡资源调整: 避免 num_workers × world_size 进程导致内存溢出
+    # 单卡 16 workers 占 67/90G 内存, 8 卡需降至 ~2 workers/进程 保持总量相当
+    if world_size > 1:
+        config["num_workers"] = max(2, config["num_workers"] // world_size)
+        config["prefetch_factor"] = max(2, config["prefetch_factor"] // world_size)
+        dist_print(f"✓ 多卡资源调整: num_workers={config['num_workers']}/进程, "
+                   f"prefetch_factor={config['prefetch_factor']}, "
+                   f"有效 batch_size={config['batch_size']} × {world_size} = {config['batch_size'] * world_size}")
+        dist_print(f"💡 提示: 有效批量增大为 {world_size} 倍, "
+                   f"建议在 config.json 中将学习率相应调大 (线性缩放规则: lr × {world_size})")
+
+    train_loader, val_loader, train_sampler = create_dataloaders(config)
+    model = build_model(args.model_type, config, device=device)
     
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1) # change: add label smoothing
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     base_lr = config["learning_rate"] if config["learning_rate"] != 0 else 0.01
     optimizer = build_optimizer(config["optimizer"], model, base_lr, config["weight_decay"])
     
@@ -643,12 +748,18 @@ def train_model():
     }
     best_val_acc = 0.0
     
-    # 加载检查点（如果需要）
+    # 加载检查点（DDP 包装前加载，确保所有进程加载相同权重）
     (history['train_losses'], history['train_accs'], 
      history['val_losses'], history['val_accs'], 
      best_val_acc, start_epoch, scheduler_state_dict) = load_checkpoint_if_needed(
-        args, model, optimizer, config["device"], base_lr, config["scheduler"], LR_MILESTONES, LR_GAMMA
+        args, model, optimizer, device, base_lr, config["scheduler"], LR_MILESTONES, LR_GAMMA
     )
+
+    # 多卡: SyncBatchNorm + DDP 包装（必须在 load_checkpoint 之后）
+    if world_size > 1:
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        model = DDP(model, device_ids=[device.index])
+        dist_print(f"✓ 模型已包装为 DDP + SyncBatchNorm")
 
     scheduler = build_scheduler(
         config["scheduler"],
@@ -659,37 +770,42 @@ def train_model():
 
     if scheduler_state_dict is not None:
         scheduler.load_state_dict(scheduler_state_dict)
-        print(f"✓ 已恢复学习率调度器状态: last_epoch={scheduler.last_epoch}")
+        dist_print(f"✓ 已恢复学习率调度器状态: last_epoch={scheduler.last_epoch}")
     elif start_epoch > 0:
         scheduler.last_epoch = start_epoch - 1
         scheduler._last_lr = [group['lr'] for group in optimizer.param_groups]
-        print(f"✓ 已按起始 epoch 对齐调度器进度: last_epoch={scheduler.last_epoch}")
+        dist_print(f"✓ 已按起始 epoch 对齐调度器进度: last_epoch={scheduler.last_epoch}")
     
-    print(f"\n--- 开始训练 ({args.model_type}) ---")
+    dist_print(f"\n--- 开始训练 ({args.model_type}) ---")
     optimizer_name = optimizer.__class__.__name__
     weight_decay = optimizer.param_groups[0].get('weight_decay', config["weight_decay"])
     if config["optimizer"] in ('adam', 'adamw'):
-        print(f"优化器: {optimizer_name} | 初始学习率: {optimizer.param_groups[0]['lr']:.6f} | weight_decay: {weight_decay}")
+        dist_print(f"优化器: {optimizer_name} | 初始学习率: {optimizer.param_groups[0]['lr']:.6f} | weight_decay: {weight_decay}")
     else:
-        print(f"优化器: {optimizer_name} | 初始学习率: {optimizer.param_groups[0]['lr']:.6f} | momentum: 0.9 | weight_decay: {weight_decay}")
+        dist_print(f"优化器: {optimizer_name} | 初始学习率: {optimizer.param_groups[0]['lr']:.6f} | momentum: 0.9 | weight_decay: {weight_decay}")
     if config["scheduler"] == 'multistep':
-        print(f"学习率策略: MultiStepLR, milestones={LR_MILESTONES}, gamma={LR_GAMMA}")
+        dist_print(f"学习率策略: MultiStepLR, milestones={LR_MILESTONES}, gamma={LR_GAMMA}")
     else:
-        print(f"学习率策略: CosineAnnealingLR, T_max={config['num_epochs']}, eta_min={config['cosine_eta_min']}")
+        dist_print(f"学习率策略: CosineAnnealingLR, T_max={config['num_epochs']}, eta_min={config['cosine_eta_min']}")
     
     # ---------- 2. 训练循环 ----------
     for epoch in range(start_epoch, config["num_epochs"]):
+        # 多卡: 设置 sampler epoch 保证每 epoch 数据打乱不同
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+
         # 训练一个 epoch
         train_loss, train_acc = train_one_epoch(
             model, train_loader, criterion, optimizer, 
-            config["device"], epoch, config["num_epochs"]
+            device, epoch, config["num_epochs"]
         )
         
-        # 验证
-        val_loss, val_acc = validate(model, val_loader, criterion, config["device"])
+        # 验证（多卡自动 all-reduce）
+        val_loss, val_acc = validate(model, val_loader, criterion, device)
         
-        # 记录并打印结果
-        log_epoch_results(epoch, config["num_epochs"], train_loss, train_acc, val_loss, val_acc)
+        # 记录并打印结果（仅主进程）
+        if is_main_process():
+            log_epoch_results(epoch, config["num_epochs"], train_loss, train_acc, val_loss, val_acc)
         history['train_losses'].append(train_loss)
         history['train_accs'].append(train_acc)
         history['val_losses'].append(val_loss)
@@ -703,7 +819,7 @@ def train_model():
         if should_early_stop(epoch, config["num_epochs"], val_acc, best_val_acc, config["early_stopping"]):
             break
         
-        # 定期保存检查点
+        # 定期保存检查点（内部已做 rank 守卫）
         if config["save_every"] > 0 and (epoch + 1) % config["save_every"] == 0:
             save_intermediate_checkpoint(
                 args, config, model, optimizer, scheduler, history, 
@@ -713,32 +829,37 @@ def train_model():
         # 学习率调度（按 epoch 结束后更新）
         scheduler.step()
     
-    # ---------- 3. 训练结束保存 ----------
-    print("\n--- 训练完成，保存最终结果 ---")
-    
-    # 保存训练历史
-    final_history_path = os.path.join(config["checkpoint_dir"], f"training_history_{args.model_type}.csv")
-    save_history_csv(history, final_history_path)
-    print(f"📊 训练历史数据已保存至: {final_history_path}")
-    
-    # 保存最终曲线图
-    final_plot_path = os.path.join(config["checkpoint_dir"], f"training_curves_{args.model_type}.png")
-    plot_training_curves(history, final_plot_path)
-    print(f"📈 训练曲线图像已保存至: {final_plot_path}")
-    
-    # 保存最终模型
-    model_save_path = os.path.join(config["checkpoint_dir"], f"model_{args.model_type}.pth")
-    torch.save(model.state_dict(), model_save_path)
-    print(f"✓ 模型已保存至: {model_save_path}")
-    
-    # 最终测试集评估
-    print("\n--- 开始对测试集进行初步评估 ---")
-    test_loss, test_acc = evaluate_test_set(config, model)
-    
-    # 保存最终结果文件
-    result_txt_path = os.path.join(config["checkpoint_dir"], "result.txt")
-    save_result_txt(args.model_type, model, history, best_val_acc, result_txt_path, test_loss, test_acc)
-    print(f"📝 结果已保存至: {result_txt_path}")
+    # ---------- 3. 训练结束保存（仅主进程） ----------
+    if is_main_process():
+        raw_model = unwrap_model(model)
+        print("\n--- 训练完成，保存最终结果 ---")
+        
+        # 保存训练历史
+        final_history_path = os.path.join(config["checkpoint_dir"], f"training_history_{args.model_type}.csv")
+        save_history_csv(history, final_history_path)
+        print(f"📊 训练历史数据已保存至: {final_history_path}")
+        
+        # 保存最终曲线图
+        final_plot_path = os.path.join(config["checkpoint_dir"], f"training_curves_{args.model_type}.png")
+        plot_training_curves(history, final_plot_path)
+        print(f"📈 训练曲线图像已保存至: {final_plot_path}")
+        
+        # 保存最终模型（始终保存原始模型权重，兼容单卡推理）
+        model_save_path = os.path.join(config["checkpoint_dir"], f"model_{args.model_type}.pth")
+        torch.save(raw_model.state_dict(), model_save_path)
+        print(f"✓ 模型已保存至: {model_save_path}")
+        
+        # 最终测试集评估
+        print("\n--- 开始对测试集进行初步评估 ---")
+        test_loss, test_acc = evaluate_test_set(config, raw_model)
+        
+        # 保存最终结果文件
+        result_txt_path = os.path.join(config["checkpoint_dir"], "result.txt")
+        save_result_txt(args.model_type, raw_model, history, best_val_acc, result_txt_path, test_loss, test_acc)
+        print(f"📝 结果已保存至: {result_txt_path}")
+
+    # ---------- 4. 清理 ----------
+    cleanup_distributed()
 
 
 if __name__ == "__main__":
