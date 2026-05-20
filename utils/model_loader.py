@@ -237,6 +237,30 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
             n_segment=num_frames,
             freeze_backbone=freeze_backbone,
         )
+    elif model_type == "LightTMF3GRU_ACSS1":
+        model = LightTMF3GRU_ACSS1(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+        )
+    elif model_type == "ResNet50_ACSS1TMF3":
+        model = ResNet50_ACSS1TMF3(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            hidden_dim=hidden_dim,
+            freeze_backbone=freeze_backbone,
+            use_gru=False,
+            fusion_mode='B',
+            reduction='auto',
+        )
+    elif model_type == "MobileNetV2_ACSS1TMF3":
+        model = MobileNetV2_ACSS1TMF3(
+            num_classes=num_classes,
+            n_segment=num_frames,
+            freeze_backbone=freeze_backbone,
+            fusion_mode='B',
+            reduction='auto',
+        )
     else:
         raise ValueError(f"未知的模型类型: {model_type}")
 

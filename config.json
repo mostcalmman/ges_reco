@@ -1,8 +1,8 @@
 {
     "_comment": "手势识别项目配置文件 - 根据平台自动选择合适的配置",
     "common": {
-        "dataset": "ssv2",
-        "model_type": "ResNet50_ACSSTMF3",
+        "dataset": "jester",
+        "model_type": "ResNet50",
         "freeze_backbone": false,
         "checkpoint_dir": "checkpoint",
         "optimizer": "sgd",

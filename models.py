@@ -22,6 +22,7 @@ modelList = ['ResNet18', 'LightTSM', 'LightTSMGRU', 'LightTMFGRU', 'TMFin1', 'TM
              'Light_OnlyTMF3_GRU', 'Light_OnlyACSS_GRU',
              'ResNet50_OnlyTMF3', 'ResNet50_OnlyACSS',
              'ResNet50_TSN', 'MobileNetV2_TSN',
+             'LightTMF3GRU_ACSS1', 'ResNet50_ACSS1TMF3', 'MobileNetV2_ACSS1TMF3',
              ]
 
 
@@ -1934,5 +1935,190 @@ class MobileNetV2_TSN(nn.Module):
         x = self.fc(x)                         # (B*T, num_classes)
         x = x.view(b, t, -1)                   # (B, T, num_classes)
         out = x.mean(dim=1)                    # (B, num_classes) consensus
+        return out
+
+
+# --------------------------
+# MARK: ACSS_1 Variants (input-dependent temporal shift)
+# --------------------------
+
+class LightTMF3GRU_ACSS1(nn.Module):
+    """LightTMF3GRU with ACSS_1 (input-dependent soft shift) replacing ACSS.
+
+    Architecture identical to LightTMF3GRU except layer1/layer2 use
+    ACSS_1_ResBlock instead of ACSSResBlock.
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128, fusion_mode='B'):
+        super(LightTMF3GRU_ACSS1, self).__init__()
+        self.n_segment = n_segment
+        self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(0.5)
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.layer1 = ACSS_1_ResBlock(32, 32, stride=1, n_segment=n_segment)
+        self.layer2 = ACSS_1_ResBlock(32, 64, stride=2, n_segment=n_segment)
+        self.layer3 = TMF3ResBlock(64, 128, stride=2, n_segment=n_segment, reduction=4, fusion_mode=fusion_mode)
+
+        self.gru = nn.GRU(
+            input_size=128,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+
+        x = x.view(b * t, c, h, w)
+        x = self.conv1(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = x.view(b, t, -1)
+
+        rnn_out, hidden = self.gru(x)
+        last_hidden = hidden[-1]
+
+        last_hidden = self.dropout(last_hidden)
+        out = self.fc(last_hidden)
+        return out
+
+
+class ResNet50_ACSS1TMF3(nn.Module):
+    """ResNet50 backbone with ACSS_1 (input-dependent shift) + TMF3.
+
+    Architecture identical to ResNet50_ACSSTMF3 except ACSS_Module is
+    replaced by ACSS_1_Module.
+    """
+
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=128,
+                 freeze_backbone=False, use_gru=False, fusion_mode='B', reduction='auto'):
+        super(ResNet50_ACSS1TMF3, self).__init__()
+        self.n_segment = n_segment
+        self.use_gru = use_gru
+
+        backbone = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+        self.stem = nn.Sequential(
+            backbone.conv1, backbone.bn1, backbone.relu, backbone.maxpool
+        )
+        self.layer1 = backbone.layer1   # -> 256ch
+        self.layer2 = backbone.layer2   # -> 512ch
+        self.layer3 = backbone.layer3   # -> 1024ch
+        self.layer4 = backbone.layer4   # -> 2048ch
+        feat_dim = 2048
+        tmf3_in_dim = 1024
+
+        self.acss1 = ACSS_1_Module(256, n_segment)
+        self.acss2 = ACSS_1_Module(512, n_segment)
+
+        red = TMF3Module._auto_reduction(tmf3_in_dim) if reduction == 'auto' else int(reduction)
+        self.tmf3 = TMF3Module(tmf3_in_dim, n_segment, reduction=red, fusion_mode=fusion_mode)
+
+        self.dropout = nn.Dropout(0.5)
+        if use_gru:
+            self.gru = nn.GRU(input_size=feat_dim, hidden_size=hidden_dim,
+                              num_layers=1, batch_first=True)
+            self.fc = nn.Linear(hidden_dim, num_classes)
+        else:
+            self.fc = nn.Linear(feat_dim, num_classes)
+
+        if freeze_backbone:
+            for param in backbone.parameters():
+                param.requires_grad = False
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+        x = x.view(b * t, c, h, w)
+
+        x = self.stem(x)
+        x = self.layer1(x)
+        x = self.acss1(x)
+        x = self.layer2(x)
+        x = self.acss2(x)
+        x = self.layer3(x)
+        x = self.tmf3(x)
+        x = self.layer4(x)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = x.view(b, t, -1)
+
+        if self.use_gru:
+            rnn_out, hidden = self.gru(x)
+            last_hidden = hidden[-1]
+            last_hidden = self.dropout(last_hidden)
+            out = self.fc(last_hidden)
+        else:
+            x = x.mean(dim=1)
+            x = self.dropout(x)
+            out = self.fc(x)
+        return out
+
+
+class MobileNetV2_ACSS1TMF3(nn.Module):
+    """MobileNetV2 backbone with ACSS_1 (input-dependent shift) + TMF3.
+
+    Architecture identical to MobileNetV2_ACSSTMF3 except ACSS_Module is
+    replaced by ACSS_1_Module.
+    """
+
+    def __init__(self, num_classes=27, n_segment=8,
+                 freeze_backbone=False, fusion_mode='B', reduction='auto'):
+        super(MobileNetV2_ACSS1TMF3, self).__init__()
+        self.n_segment = n_segment
+
+        backbone = models.mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V2)
+        stages = _split_mobilenet_by_stride(backbone.features)
+        self.stages = nn.ModuleList(stages)
+
+        if len(stages) < 2:
+            raise ValueError("MobileNetV2 split produced fewer than 2 stages.")
+
+        tmf3_in_dim = _get_stage_out_channels(stages[-2])
+        feat_dim = _get_stage_out_channels(stages[-1])
+
+        acss_modules = []
+        for stage in stages[:-2]:
+            out_ch = _get_stage_out_channels(stage)
+            acss_modules.append(ACSS_1_Module(out_ch, n_segment))
+        self.acss_modules = nn.ModuleList(acss_modules)
+
+        red = TMF3Module._auto_reduction(tmf3_in_dim) if reduction == 'auto' else int(reduction)
+        self.tmf3 = TMF3Module(tmf3_in_dim, n_segment, reduction=red, fusion_mode=fusion_mode)
+
+        self.dropout = nn.Dropout(0.5)
+        self.fc = nn.Linear(feat_dim, num_classes)
+
+        if freeze_backbone:
+            for param in backbone.parameters():
+                param.requires_grad = False
+
+    def forward(self, x):
+        b, t, c, h, w = x.size()
+        x = x.view(b * t, c, h, w)
+
+        deepest_pre_idx = len(self.stages) - 2
+        for i, stage in enumerate(self.stages):
+            x = stage(x)
+            if i < deepest_pre_idx:
+                x = self.acss_modules[i](x)
+            elif i == deepest_pre_idx:
+                x = self.tmf3(x)
+
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = x.view(b, t, -1)
+
+        x = x.mean(dim=1)
+        x = self.dropout(x)
+        out = self.fc(x)
         return out
 

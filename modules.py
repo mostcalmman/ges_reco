@@ -759,6 +759,155 @@ class ACSSResBlock(nn.Module):
 
 
 # --------------------------
+# MARK: ACSS_1 — Input-Dependent Adaptive Channel Soft Shift
+# --------------------------
+
+class ACSS_1_Module(nn.Module):
+    """Adaptive Channel Soft Shift v1 — input-dependent, time-varying soft shift.
+
+    Unlike ACSS_Module which learns a *static* per-channel shift distribution
+    (C, 3), ACSS_1_Module generates frame-specific shift weights from the
+    input features via a depthwise 1-D temporal convolution.  This allows
+    different frames to adopt different shift patterns.
+
+    Pipeline:
+        1. GAP:   (B*T, C, H, W)  →  (B*T, C, 1, 1)
+        2. Reshape to (B, C, T) — per-channel temporal feature sequence
+        3. DW-Conv1d (groups=C): (B, C, T) → (B, 3C, T) — 3-way logits
+        4. Reshape to (B*T, C, 3) → softmax → shift weights
+        5. Soft temporal blend (same as ACSS_Module)
+
+    Learnable parameters: Conv1d weight (3C × 1 × K) + bias (3C) = C(3K + 3).
+
+    Args:
+        channels: Number of input channels (C).
+        n_segment: Number of temporal segments (T).
+        kernel_size: Temporal conv kernel size. Default 3.
+    """
+
+    def __init__(self, channels, n_segment, kernel_size=3):
+        super(ACSS_1_Module, self).__init__()
+        self.channels = channels
+        self.n_segment = n_segment
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+
+        # Depthwise 1D conv: each channel independently produces 3 shift logits
+        self.conv1d = nn.Conv1d(
+            channels, channels * 3,
+            kernel_size=kernel_size,
+            padding=kernel_size // 2,
+            groups=channels,
+            bias=True
+        )
+
+    def forward(self, x, n_segment=None):
+        """
+        Args:
+            x: Input tensor, shape (B*T, C, H, W).
+            n_segment: Override for temporal segments. Uses self.n_segment if None.
+
+        Returns:
+            Tensor of same shape (B*T, C, H, W) with input-dependent soft
+            temporal shift applied.
+        """
+        if n_segment is None:
+            n_segment = self.n_segment
+
+        if n_segment <= 1:
+            return x
+
+        BT, C, H, W = x.size()
+        B = BT // n_segment
+        T = n_segment
+
+        # 1. Global average pooling → per-channel temporal descriptor
+        feat = self.avg_pool(x)                            # (B*T, C, 1, 1)
+        feat = feat.view(B, T, C).permute(0, 2, 1)         # (B, C, T)
+
+        # 2. Depthwise 1D temporal convolution → 3-way shift logits
+        shift_logits = self.conv1d(feat)                   # (B, 3*C, T)
+        shift_logits = shift_logits.view(B, C, 3, T)       # (B, C, 3, T)
+        shift_logits = shift_logits.permute(0, 3, 1, 2)    # (B, T, C, 3)
+        shift_logits = shift_logits.reshape(BT, C, 3)      # (B*T, C, 3)
+
+        # 3. Softmax over {left, static, right}
+        weights = F.softmax(shift_logits, dim=-1,
+                            dtype=torch.float32)          # (B*T, C, 3)
+        w_left   = weights[:, :, 0].view(BT, C, 1, 1)     # pull from t+1
+        w_static = weights[:, :, 1].view(BT, C, 1, 1)     # keep current
+        w_right  = weights[:, :, 2].view(BT, C, 1, 1)     # pull from t-1
+
+        # 4. Build temporal neighbors with zero-padding at boundaries
+        x_5d = x.view(B, T, C, H, W)
+
+        x_prev = torch.zeros_like(x_5d)
+        x_prev[:, 1:] = x_5d[:, :-1]                      # X_{t-1}
+
+        x_next = torch.zeros_like(x_5d)
+        x_next[:, :-1] = x_5d[:, 1:]                      # X_{t+1}
+
+        # Flatten back to (B*T, C, H, W)
+        x_flat      = x_5d.view(BT, C, H, W)
+        x_prev_flat = x_prev.view(BT, C, H, W)
+        x_next_flat = x_next.view(BT, C, H, W)
+
+        # 5. Soft temporal blend
+        out = (w_left * x_next_flat
+               + w_static * x_flat
+               + w_right * x_prev_flat)
+
+        return out                                          # (B*T, C, H, W)
+
+
+class ACSS_1_ResBlock(nn.Module):
+    """Residual block with ACSS_1 (input-dependent soft shift) before the first conv.
+
+    Drop-in replacement for ACSSResBlock: same interface, same residual
+    structure, but uses ACSS_1_Module (time-varying shift weights from 1D conv)
+    instead of ACSS_Module (static learned logits).
+
+    Args:
+        in_channels: Input channel count.
+        out_channels: Output channel count.
+        stride: Stride for the first convolution (spatial downsampling).
+        n_segment: Number of temporal segments.
+    """
+
+    def __init__(self, in_channels, out_channels, stride=1, n_segment=8):
+        super(ACSS_1_ResBlock, self).__init__()
+        self.n_segment = n_segment
+
+        self.acss = ACSS_1_Module(in_channels, n_segment)
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        identity = self.shortcut(x)
+
+        out = self.acss(x)
+        out = F.relu(self.bn1(self.conv1(out)))
+        out = self.bn2(self.conv2(out))
+
+        out += identity
+        out = F.relu(out)
+        return out
+
+
+# --------------------------
 # MARK: Motion-Guided Dynamic Shift (MGDS)
 # --------------------------
 
@@ -810,7 +959,7 @@ class MGDS_Module(nn.Module):
         BT, C, H, W = x.size()
 
         # ---- Step 1: Weight generation via bottleneck MLP ----
-        v = v_motion.view(BT, C)                              # (B*T, C)
+        v = v_motion.view(BT, C)                               # (B*T, C)
         v = self.relu(self.fc1(v))                             # (B*T, C//r)
         v = self.fc2(v)                                        # (B*T, 3*C)
         v = v.view(BT, C, 3)                                   # (B*T, C, 3) — per-channel triplet [left, static, right]
@@ -823,7 +972,7 @@ class MGDS_Module(nn.Module):
         B = BT // n_segment
         T = n_segment
 
-        x_5d = x.view(B, T, C, H, W)                          # (B, T, C, H, W)
+        x_5d = x.view(B, T, C, H, W)                           # (B, T, C, H, W)
 
         x_prev = torch.zeros_like(x_5d)                        # X_{t-1}, zero-pad first frame
         x_prev[:, 1:] = x_5d[:, :-1]                           # (B, T, C, H, W)
@@ -846,7 +995,7 @@ class MGDS_Module(nn.Module):
                + w_right * x_next)                              # pull from t+1
         # out shape: (B, T, C, H, W)
 
-        return out.view(BT, C, H, W)                           # (B*T, C, H, W)
+        return out.view(BT, C, H, W)                            # (B*T, C, H, W)
 
 
 # --------------------------
