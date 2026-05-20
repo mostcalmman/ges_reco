@@ -140,7 +140,8 @@ def get_train_transform(img_size=(100, 176), normalize_mean=None, normalize_std=
         #     scale=(0.95, 1.05),
         #     fill=0
         # ),
-        transforms.CenterCrop(h),
+        # transforms.CenterCrop(h),
+        transforms.RandomCrop(h),
         transforms.ColorJitter(brightness=0.2, contrast=0.2), 
         transforms.ToTensor(),
         transforms.Normalize(mean=normalize_mean, std=normalize_std)
