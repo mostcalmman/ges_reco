@@ -32,6 +32,9 @@ def parse_args():
     parser.add_argument("--model_weight", type=str, default="", help="模型权重文件路径(可选，留空则仅使用 ImageNet 预训练初始化)")
     parser.add_argument("--output", type=str, default="checkpoint/inference_results", help="推理输出路径")
     parser.add_argument("--batch_size", type=int, default=None, help="推理时的 Batch Size")
+    parser.add_argument("--benchmark_latency", action="store_true", help="运行纯模型前向 latency benchmark（不含读盘、预处理、DataLoader）")
+    parser.add_argument("--warmup_iters", type=int, default=50, help="latency benchmark 的 warm-up 次数")
+    parser.add_argument("--benchmark_iters", type=int, default=200, help="latency benchmark 的正式统计次数")
     return parser.parse_args()
 
 
@@ -289,6 +292,87 @@ def infer_dataset(args, model, device, config):
     print(f"✅ 统计结果已保存至: {results_txt_path}")
 
 
+def benchmark_pure_latency(args, model, device, config):
+    """评估纯模型前向 latency，仅统计 GPU 上已就绪张量的前向时间。"""
+    benchmark_batch_size = args.batch_size if args.batch_size is not None else 1
+    num_frames = config.get("num_frames", DEFAULT_NUM_FRAMES)
+    img_size = tuple(config.get("img_size", (100, 176)))
+    height, width = img_size
+
+    if args.warmup_iters < 0 or args.benchmark_iters <= 0:
+        raise ValueError("warmup_iters 必须 >= 0 且 benchmark_iters 必须 > 0")
+
+    inputs = torch.randn(
+        benchmark_batch_size,
+        num_frames,
+        3,
+        height,
+        width,
+        device=device,
+    )
+
+    print("开始纯前向 latency benchmark...")
+    print(f"输入张量 shape: {tuple(inputs.shape)}")
+    print(f"warm-up 次数: {args.warmup_iters}")
+    print(f"统计次数: {args.benchmark_iters}")
+    print("计时范围仅包含 model(inputs)，不包含读盘、预处理、DataLoader 和 Host->Device 拷贝")
+
+    with torch.no_grad():
+        for _ in range(args.warmup_iters):
+            _ = model(inputs)
+
+    synchronize_if_cuda(device)
+    latency_ms = []
+    with torch.no_grad():
+        for _ in range(args.benchmark_iters):
+            synchronize_if_cuda(device)
+            start_time = time.perf_counter()
+            _ = model(inputs)
+            synchronize_if_cuda(device)
+            latency_ms.append((time.perf_counter() - start_time) * 1000.0)
+
+    latency_ms = np.array(latency_ms, dtype=np.float64)
+    per_clip_latency_ms = latency_ms / benchmark_batch_size
+
+    mean_batch_latency_ms = float(np.mean(latency_ms))
+    p50_batch_latency_ms = float(np.percentile(latency_ms, 50))
+    p95_batch_latency_ms = float(np.percentile(latency_ms, 95))
+    mean_per_clip_latency_ms = float(np.mean(per_clip_latency_ms))
+    p50_per_clip_latency_ms = float(np.percentile(per_clip_latency_ms, 50))
+    p95_per_clip_latency_ms = float(np.percentile(per_clip_latency_ms, 95))
+
+    print("-" * 30)
+    print(f"Batch latency mean: {mean_batch_latency_ms:.4f} ms")
+    print(f"Batch latency p50: {p50_batch_latency_ms:.4f} ms")
+    print(f"Batch latency p95: {p95_batch_latency_ms:.4f} ms")
+    print(f"Per-clip latency mean: {mean_per_clip_latency_ms:.4f} ms")
+    print(f"Per-clip latency p50: {p50_per_clip_latency_ms:.4f} ms")
+    print(f"Per-clip latency p95: {p95_per_clip_latency_ms:.4f} ms")
+
+    results_txt_path, _ = resolve_output_paths(args.output, is_single_video=True)
+    ensure_parent_dir(results_txt_path)
+
+    summary_lines = [
+        f"inference_time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "benchmark_mode: pure_forward_latency",
+        f"device: {device}",
+        f"input_shape: {tuple(inputs.shape)}",
+        f"warmup_iters: {args.warmup_iters}",
+        f"benchmark_iters: {args.benchmark_iters}",
+        f"mean_batch_latency_ms: {mean_batch_latency_ms:.4f}",
+        f"p50_batch_latency_ms: {p50_batch_latency_ms:.4f}",
+        f"p95_batch_latency_ms: {p95_batch_latency_ms:.4f}",
+        f"mean_per_clip_latency_ms: {mean_per_clip_latency_ms:.4f}",
+        f"p50_per_clip_latency_ms: {p50_per_clip_latency_ms:.4f}",
+        f"p95_per_clip_latency_ms: {p95_per_clip_latency_ms:.4f}",
+    ]
+
+    with open(results_txt_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(summary_lines) + "\n")
+
+    print(f"✅ benchmark 结果已保存至: {results_txt_path}")
+
+
 def run_inference():
     """主推理流程"""
     args = parse_args()
@@ -315,6 +399,10 @@ def run_inference():
     else:
         print("未提供 checkpoint，将仅使用模型默认初始化（例如 ImageNet 预训练 backbone）。")
     model.eval()
+
+    if args.benchmark_latency:
+        benchmark_pure_latency(args, model, device, config)
+        return
 
     # 执行推理
     if args.video_path:

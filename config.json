@@ -1,8 +1,8 @@
 {
     "_comment": "手势识别项目配置文件 - 根据平台自动选择合适的配置",
     "common": {
-        "dataset": "ssv2",
-        "model_type": "ResNet50_ACSSTMF3",
+        "dataset": "jester",
+        "model_type": "MobileNetV2_TSM",
         "freeze_backbone": false,
         "checkpoint_dir": "checkpoint",
         "optimizer": "sgd",
@@ -12,7 +12,7 @@
         "early_stopping": false,
         "num_frames": 16,
         "hidden_dim": 256,
-        "learning_rate": 0.01,
+        "learning_rate": 0.005,
         "weight_decay": 5e-4,
         "normalize_mean": [
             0.485,
@@ -34,7 +34,7 @@
         "ssv2": {
             "data_dir": "dataset/SSv2",
             "num_classes": 174,
-            "img_size": [224, 224]
+            "img_size": [112, 112]
         }
     },
     "windows": {
@@ -45,7 +45,7 @@
         "num_epochs": 20
     },
     "linux": {
-        "batch_size": 16,
+        "batch_size": 64,
         "num_workers": 16,
         "pin_memory": true,
         "prefetch_factor": 8,
