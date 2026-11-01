@@ -13,7 +13,7 @@ from torchvision.models import ShuffleNet_V2_X1_0_Weights, ShuffleNet_V2_X2_0_We
 
 from modules import *
 
-modelList = ['ResNet18', 'LightTSM', 'LightTSMGRU', 'LightTMFGRU', 'TMFin1', 'TMFin2', 'TMFin123', 'ab1', 'ab2', 'LightTSMGRU', 'LightResNet',
+modelList = ['LightTMF3GRU_SwapPlacement', 'LightTMF3GRU_ShortOnly', 'LightTMF3GRU_NoSpatial', 'LightTMF3_NoGRU'] + ['ResNet18', 'LightTSM', 'LightTSMGRU', 'LightTMFGRU', 'TMFin1', 'TMFin2', 'TMFin123', 'ab1', 'ab2', 'LightTSMGRU', 'LightResNet',
              'LightTMF2GRU', 'LightTMF25GRU', 'LightTMF26GRU', 'LightTMF3GRU', 'LightTMF4GRU',
              'ResNet50', 'MobileNetV2', 'ShuffleNetV2x10',
              'ResNet50_ACSSTMF3', 'MobileNetV2_ACSSTMF3', 'MobileNetV3Large_ACSSTMF3',
@@ -508,6 +508,50 @@ class LightTMF3GRU(nn.Module):
         last_hidden = self.dropout(last_hidden)
         out = self.fc(last_hidden)              # (B, num_classes)
         return out
+
+
+# MARK: Revision ablations (static ACSS, DTMF fusion B)
+class LightTMF3GRU_SwapPlacement(LightTMF3GRU):
+    """Move DTMF to stage 1 and ACSS to stage 3; retain stage widths."""
+
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=256):
+        super().__init__(num_classes, n_segment, hidden_dim)
+        self.layer1 = TMF3ResBlock(32, 32, n_segment=n_segment, reduction=4, fusion_mode='B')
+        self.layer3 = ACSSResBlock(64, 128, stride=2, n_segment=n_segment)
+
+
+class LightTMF3GRU_ShortOnly(LightTMF3GRU):
+    """Use short-range differences across the full DTMF bottleneck."""
+
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=256):
+        super().__init__(num_classes, n_segment, hidden_dim)
+        self.layer3 = TMF3ResBlock(64, 128, stride=2, n_segment=n_segment,
+                                  reduction=4, fusion_mode='B', motion_mode='short_only')
+
+
+class LightTMF3GRU_NoSpatial(LightTMF3GRU):
+    """Remove spatial attention while retaining channel attention and MGDS."""
+
+    def __init__(self, num_classes=27, n_segment=8, hidden_dim=256):
+        super().__init__(num_classes, n_segment, hidden_dim)
+        self.layer3 = TMF3ResBlock(64, 128, stride=2, n_segment=n_segment,
+                                  reduction=4, fusion_mode='B', use_spatial_attention=False)
+
+
+class LightTMF3_NoGRU(LightTMF3GRU):
+    """Keep the full convolutional model and replace GRU with temporal mean."""
+
+    def __init__(self, num_classes=27, n_segment=8):
+        super().__init__(num_classes, n_segment, hidden_dim=256)
+        del self.gru
+        self.fc = nn.Linear(128, num_classes)
+
+    def forward(self, x):
+        b, t, c, h, w = x.shape
+        x = self.conv1(x.reshape(b * t, c, h, w))
+        x = self.layer3(self.layer2(self.layer1(x)))
+        x = F.adaptive_avg_pool2d(x, 1).reshape(b, t, 128).mean(dim=1)
+        return self.fc(self.dropout(x))
 
 
 class LightTMF4GRU(nn.Module):
@@ -1088,7 +1132,7 @@ def _get_stage_out_channels(stage):
             out_ch = m.out_channels
     return out_ch
 
-
+# MARK: Heavy Publish
 class ResNet50_ACSSTMF3(nn.Module):
     """ResNet50 backbone with ACSS before shallow-deep stages and TMF3 before layer4.
 
@@ -1159,7 +1203,7 @@ class ResNet50_ACSSTMF3(nn.Module):
             out = self.fc(x)
         return out
 
-
+# MARK: Mobile Publish
 class MobileNetV2_ACSSTMF3(nn.Module):
     """MobileNetV2 backbone with ACSS before non-deepest stages and TMF3 before final.
 

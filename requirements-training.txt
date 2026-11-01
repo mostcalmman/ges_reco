@@ -1,0 +1,6 @@
+numpy
+pandas
+Pillow
+matplotlib
+# Install torch and torchvision separately for the server CUDA environment.
+# Optional SSv2 extraction: opencv-python-headless

@@ -8,7 +8,7 @@ import os
 import torch
 
 
-def get_config(config_path="config.json"):
+def get_config(config_path="config.json", dataset=None):
     """
     加载配置文件并根据当前平台返回合并后的配置字典。
     
@@ -41,7 +41,9 @@ def get_config(config_path="config.json"):
     merged_config.update(platform_config)
     
     # 合并数据集配置（dataset profile 覆盖 common 中的 data_dir / num_classes 等）
-    dataset_name = merged_config.get("dataset")
+    dataset_name = dataset or merged_config.get("dataset")
+    if dataset is not None:
+        merged_config["dataset"] = dataset
     if dataset_name and "datasets" in config_data:
         dataset_config = config_data["datasets"].get(dataset_name, {})
         merged_config.update(dataset_config)

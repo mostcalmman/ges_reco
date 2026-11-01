@@ -1035,10 +1035,14 @@ class TMF3ResBlock(nn.Module):
     """
 
     def __init__(self, in_channels, out_channels, stride=1, n_segment=8,
-                 reduction=4, fusion_mode='B'):
+                 reduction=4, fusion_mode='B',
+                 motion_mode='dual', use_spatial_attention=True):
         super(TMF3ResBlock, self).__init__()
         self.n_segment = n_segment
         self.fusion_mode = fusion_mode
+        if motion_mode not in ('dual', 'short_only'):
+            raise ValueError(f"Unknown motion_mode: {motion_mode}")
+        self.use_spatial_attention = use_spatial_attention
 
         # ---- Conv pipeline (identical to TMF2ResBlock) ----
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
@@ -1059,7 +1063,7 @@ class TMF3ResBlock(nn.Module):
 
         # ---- Motion Excitation components (replicated from TMF2ResBlock) ----
         reduced_channels = in_channels // reduction
-        self.short_channels = reduced_channels // 2
+        self.short_channels = reduced_channels if motion_mode == 'short_only' else reduced_channels // 2
         self.long_channels = reduced_channels - self.short_channels
 
         self.squeeze = nn.Conv2d(in_channels, reduced_channels,
@@ -1074,8 +1078,9 @@ class TMF3ResBlock(nn.Module):
         self.channel_sigmoid = nn.Sigmoid()
 
         # Spatial path: single-channel map → 7×7 conv → sigmoid
-        self.spatial_conv = nn.Conv2d(1, 1, kernel_size=7, padding=3, bias=False)
-        self.spatial_sigmoid = nn.Sigmoid()
+        if use_spatial_attention:
+            self.spatial_conv = nn.Conv2d(1, 1, kernel_size=7, padding=3, bias=False)
+            self.spatial_sigmoid = nn.Sigmoid()
 
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
 
@@ -1135,10 +1140,13 @@ class TMF3ResBlock(nn.Module):
         channel_weight = self.channel_sigmoid(v_pre_sigmoid)      # (B*T, C, 1, 1) — [0, 1]
 
         # ---- Spatial Path ----
-        d_spatial = d.mean(dim=2, keepdim=True)                   # (B, T, 1, H, W)
-        d_spatial = d_spatial.view(nt, 1, h, w)                   # (B*T, 1, H, W)
-        spatial_weight = self.spatial_conv(d_spatial)              # (B*T, 1, H, W)
-        spatial_weight = self.spatial_sigmoid(spatial_weight)      # (B*T, 1, H, W) — [0, 1]
+        if self.use_spatial_attention:
+            d_spatial = d.mean(dim=2, keepdim=True)                   # (B, T, 1, H, W)
+            d_spatial = d_spatial.view(nt, 1, h, w)                   # (B*T, 1, H, W)
+            spatial_weight = self.spatial_conv(d_spatial)              # (B*T, 1, H, W)
+            spatial_weight = self.spatial_sigmoid(spatial_weight)      # (B*T, 1, H, W) — [0, 1]
+        else:
+            spatial_weight = x.new_ones(nt, 1, h, w)
 
         return v_pre_sigmoid, channel_weight, spatial_weight
 
@@ -1212,15 +1220,19 @@ class TMF3Module(nn.Module):
         fusion_mode: 'A' (Oracle) or 'B' (Dual-path). Default 'B'.
     """
 
-    def __init__(self, channels, n_segment=8, reduction=4, fusion_mode='B'):
+    def __init__(self, channels, n_segment=8, reduction=4, fusion_mode='B',
+                 motion_mode='dual', use_spatial_attention=True):
         super(TMF3Module, self).__init__()
         self.channels = channels
         self.n_segment = n_segment
         self.fusion_mode = fusion_mode
+        if motion_mode not in ('dual', 'short_only'):
+            raise ValueError(f"Unknown motion_mode: {motion_mode}")
+        self.use_spatial_attention = use_spatial_attention
 
         # ---- Motion Excitation components ----
         reduced_channels = channels // reduction
-        self.short_channels = reduced_channels // 2
+        self.short_channels = reduced_channels if motion_mode == 'short_only' else reduced_channels // 2
         self.long_channels = reduced_channels - self.short_channels
 
         self.squeeze = nn.Conv2d(channels, reduced_channels,
@@ -1235,8 +1247,9 @@ class TMF3Module(nn.Module):
         self.channel_sigmoid = nn.Sigmoid()
 
         # Spatial path: single-channel map → 7×7 conv → sigmoid
-        self.spatial_conv = nn.Conv2d(1, 1, kernel_size=7, padding=3, bias=False)
-        self.spatial_sigmoid = nn.Sigmoid()
+        if use_spatial_attention:
+            self.spatial_conv = nn.Conv2d(1, 1, kernel_size=7, padding=3, bias=False)
+            self.spatial_sigmoid = nn.Sigmoid()
 
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
 
@@ -1312,10 +1325,13 @@ class TMF3Module(nn.Module):
         channel_weight = self.channel_sigmoid(v_pre_sigmoid)      # (B*T, C, 1, 1) — [0, 1]
 
         # ---- Spatial Path ----
-        d_spatial = d.mean(dim=2, keepdim=True)                   # (B, T, 1, H, W)
-        d_spatial = d_spatial.view(nt, 1, h, w)                   # (B*T, 1, H, W)
-        spatial_weight = self.spatial_conv(d_spatial)              # (B*T, 1, H, W)
-        spatial_weight = self.spatial_sigmoid(spatial_weight)      # (B*T, 1, H, W) — [0, 1]
+        if self.use_spatial_attention:
+            d_spatial = d.mean(dim=2, keepdim=True)                   # (B, T, 1, H, W)
+            d_spatial = d_spatial.view(nt, 1, h, w)                   # (B*T, 1, H, W)
+            spatial_weight = self.spatial_conv(d_spatial)              # (B*T, 1, H, W)
+            spatial_weight = self.spatial_sigmoid(spatial_weight)      # (B*T, 1, H, W) — [0, 1]
+        else:
+            spatial_weight = x.new_ones(nt, 1, h, w)
 
         return v_pre_sigmoid, channel_weight, spatial_weight
 

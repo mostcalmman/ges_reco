@@ -1,13 +1,16 @@
 import os
 import argparse
 import shutil
+import json
+import random
+import numpy as np
 from datetime import datetime
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
 import matplotlib
 matplotlib.use('Agg')
@@ -89,7 +92,7 @@ def unwrap_model(model):
 # 配置与初始化函数
 # ============================================================
 
-def parse_args():
+def parse_args(argv=None):
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description="Gesture Recognition Training")
     parser.add_argument(
@@ -113,7 +116,24 @@ def parse_args():
         help="学习率调度器；可选 cosine 或 multistep（若不传则使用 config.json）",
     )
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training from")
-    return parser.parse_args()
+    parser.add_argument("--config", default="config.json")
+    parser.add_argument("--dataset", choices=['jester', 'ssv2'])
+    parser.add_argument("--data_dir")
+    parser.add_argument("--img_size", type=int, help="Square crop size")
+    parser.add_argument("--epochs", type=int)
+    parser.add_argument("--batch_size", type=int, help="Batch size per process/GPU")
+    parser.add_argument("--num_workers", type=int)
+    parser.add_argument("--num_frames", type=int)
+    parser.add_argument("--hidden_dim", type=int)
+    parser.add_argument("--learning_rate", type=float)
+    parser.add_argument("--weight_decay", type=float)
+    parser.add_argument("--optimizer", choices=OPTIMIZER_CHOICES)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--save_every", type=int)
+    parser.add_argument("--max_samples", type=int, default=None,
+                        help="Smoke test only: limit each train/validation split")
+    parser.add_argument("--skip_test", action="store_true", help="Skip final test split inference")
+    return parser.parse_args(argv)
 
 
 def backup_config_to_checkpoint(config_path, checkpoint_dir):
@@ -138,7 +158,26 @@ def setup_training():
         tuple: (args, config)
     """
     args = parse_args()
-    config = get_config()
+    config = get_config(args.config, dataset=args.dataset)
+    for key in ('data_dir', 'batch_size', 'num_workers', 'num_frames', 'hidden_dim',
+                'learning_rate', 'weight_decay', 'optimizer', 'save_every'):
+        value = getattr(args, key)
+        if value is not None:
+            config[key] = value
+    if args.img_size is not None:
+        config['img_size'] = [args.img_size, args.img_size]
+    if args.epochs is not None:
+        config['num_epochs'] = args.epochs
+    config['seed'] = args.seed
+    config['max_samples'] = args.max_samples
+    config['skip_test'] = args.skip_test
+    if args.max_samples is not None and args.max_samples <= 0:
+        raise ValueError('--max_samples must be positive')
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
 
     model_type_in_config = config.get("model_type", "resnet")
     model_type = args.model_type if args.model_type is not None else model_type_in_config
@@ -184,7 +223,9 @@ def setup_training():
         os.makedirs(config["checkpoint_dir"], exist_ok=True)
 
         # 在训练开始前备份本次配置文件
-        backup_config_to_checkpoint("config.json", config["checkpoint_dir"])
+        backup_config_to_checkpoint(args.config, config["checkpoint_dir"])
+        with open(os.path.join(config["checkpoint_dir"], "resolved_config.json"), 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False, default=str)
 
     # 多卡时等待 rank 0 创建目录完成
     if is_dist():
@@ -259,6 +300,11 @@ def create_dataloaders(config):
         sampling_mode=SAMPLING_UNIFORM,
     )
 
+    if config.get('max_samples') is not None:
+        limit = config.get('max_samples')
+        train_dataset = Subset(train_dataset, range(min(limit, len(train_dataset))))
+        val_dataset = Subset(val_dataset, range(min(limit, len(val_dataset))))
+
     # 分布式训练: 使用 DistributedSampler
     train_sampler = None
     val_sampler = None
@@ -277,7 +323,7 @@ def create_dataloaders(config):
         sampler=train_sampler,
         num_workers=config["num_workers"], 
         pin_memory=config["pin_memory"], 
-        prefetch_factor=config["prefetch_factor"]
+        prefetch_factor=config.get("prefetch_factor", 2) if config.get("num_workers", 0) > 0 else None
     )
     val_loader = DataLoader(
         val_dataset, 
@@ -286,7 +332,7 @@ def create_dataloaders(config):
         sampler=val_sampler,
         num_workers=config["num_workers"], 
         pin_memory=config["pin_memory"], 
-        prefetch_factor=config["prefetch_factor"]
+        prefetch_factor=config.get("prefetch_factor", 2) if config.get("num_workers", 0) > 0 else None
     )
     
     return train_loader, val_loader, train_sampler
@@ -661,6 +707,8 @@ def evaluate_test_set(config, model):
     Returns:
         tuple: (test_loss, test_acc) 如果测试集没有标签则返回 (None, None)
     """
+    if config.get("skip_test", False):
+        return None, None
     test_csv_path = os.path.join(config["data_dir"], "Test.csv")
     
     if not os.path.exists(test_csv_path):
@@ -826,6 +874,9 @@ def train_model():
         if should_early_stop(epoch, config["num_epochs"], val_acc, best_val_acc, config["early_stopping"]):
             break
         
+        # Save the scheduler state for the next epoch, so resume preserves LR milestones.
+        scheduler.step()
+
         # 定期保存检查点（内部已做 rank 守卫）
         if config["save_every"] > 0 and (epoch + 1) % config["save_every"] == 0:
             save_intermediate_checkpoint(
@@ -833,8 +884,7 @@ def train_model():
                 epoch, best_val_acc
             )
 
-        # 学习率调度（按 epoch 结束后更新）
-        scheduler.step()
+
     
     # ---------- 3. 训练结束保存（仅主进程） ----------
     if is_main_process():
@@ -858,7 +908,9 @@ def train_model():
         
         # 最终测试集评估
         print("\n--- 开始对测试集进行初步评估 ---")
-        test_loss, test_acc = evaluate_test_set(config, raw_model)
+        test_loss, test_acc = (None, None)
+        if not config.get('skip_test', False):
+            test_loss, test_acc = evaluate_test_set(config, raw_model)
         
         # 保存最终结果文件
         result_txt_path = os.path.join(config["checkpoint_dir"], "result.txt")
