@@ -7,3 +7,6 @@ temporal-shift-module/
 .sisyphus/
 *.tar
 ActionNet/
+paper/
+output/
+tmp/

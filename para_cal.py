@@ -52,7 +52,7 @@ def calculate_flops(model, config):
     num_frames = 16
     # img_size = config.get("img_size", (100, 176))
     # height, width = img_size
-    height, width = 100, 100
+    height, width = 224, 224
     
     
     # 构造 dummy input: (B=1, T, C=3, H, W)

@@ -27,7 +27,7 @@ modelList = ['ResNet18', 'LightTSM', 'LightTSMGRU', 'LightTMFGRU', 'TMFin1', 'TM
 
 
 # --------------------------
-# MARK: ResNet18
+# ResNet18
 # --------------------------
 class ResNet18(nn.Module):
     """Baseline: pretrained ResNet18 with temporal mean pooling.
@@ -202,7 +202,6 @@ class LightTSMGRU(nn.Module):
 
 # --------------------------
 # LightTMFGRU
-# MARK: 发表
 # --------------------------
 
 class LightTMFGRU(nn.Module):
@@ -451,7 +450,8 @@ class LightTMF26GRU(nn.Module):
         out = self.fc(last_hidden)              # (B, num_classes)
         return out
     
-# MARK: publish
+# MARK: Lite Publish
+# [AQ]LiteResNetGRU+ACSS+DTMF
 class LightTMF3GRU(nn.Module):
     """
     TMF3: ACSS + TMF3 + GRU

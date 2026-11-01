@@ -607,7 +607,8 @@ class TMF2ResBlock(nn.Module):
 
 
 # --------------------------
-# MARK: Adaptive Channel Soft Shift (ACSS)
+# MARK: ACSS
+# Adaptive Channel Soft Shift
 # --------------------------
 
 class ACSS_Module(nn.Module):
@@ -759,7 +760,9 @@ class ACSSResBlock(nn.Module):
 
 
 # --------------------------
-# MARK: ACSS_1 — Input-Dependent Adaptive Channel Soft Shift
+# MARK: ACSS_1
+# Input-Dependent Adaptive Channel Soft Shift
+# [AQ] 论文中的 ACSS 更接近这个版本
 # --------------------------
 
 class ACSS_1_Module(nn.Module):
@@ -908,7 +911,7 @@ class ACSS_1_ResBlock(nn.Module):
 
 
 # --------------------------
-# MARK: Motion-Guided Dynamic Shift (MGDS)
+# Motion-Guided Dynamic Shift (MGDS)
 # --------------------------
 
 class MGDS_Module(nn.Module):
@@ -999,7 +1002,9 @@ class MGDS_Module(nn.Module):
 
 
 # --------------------------
-# MARK: TMF3 — ME + MGDS Fusion Block
+# MARK: DTMF
+# ME + MGDS Fusion Block
+# [AQ] 这就是 DTMF 的实现, fusion_mode='B'
 # --------------------------
 
 class TMF3ResBlock(nn.Module):
@@ -1175,7 +1180,9 @@ class TMF3ResBlock(nn.Module):
 
 
 # --------------------------
-# MARK: TMF3Module — Standalone ME + MGDS Temporal Fusion
+# MARK: DTMF Module
+# Standalone ME + MGDS Temporal Fusion
+# [AQ] DTMF的模块化实现, 用于ResNet等backbone中, 作为可插拔的时序模块
 # --------------------------
 
 class TMF3Module(nn.Module):
