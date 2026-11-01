@@ -24,6 +24,18 @@ MODEL_LIST = [
 ]
 
 
+MODEL_PRESETS = {
+    "default": MODEL_LIST,
+    "jester_revision": [
+        "LightTMF3GRU",
+        "LightTMF3GRU_SwapPlacement",
+        "LightTMF3GRU_ShortOnly",
+        "LightTMF3GRU_NoSpatial",
+        "LightTMF3_NoGRU",
+    ],
+}
+
+
 def now_str() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -32,6 +44,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Batch run train.py for a fixed model list (long-running friendly)."
     )
+    parser.add_argument("--preset", choices=MODEL_PRESETS, default="default",
+                        help="Model group; jester_revision selects the five Micro experiments.")
     parser.add_argument(
         "--python",
         type=str,
@@ -70,7 +84,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_or_init_state(state_path: Path) -> dict:
+def load_or_init_state(state_path: Path, model_names=None) -> dict:
+    if model_names is None:
+        model_names = MODEL_LIST
     if state_path.exists():
         with state_path.open("r", encoding="utf-8") as f:
             state = json.load(f)
@@ -82,7 +98,7 @@ def load_or_init_state(state_path: Path) -> dict:
         }
 
     models = state.setdefault("models", {})
-    for model_name in MODEL_LIST:
+    for model_name in model_names:
         models.setdefault(
             model_name,
             {
@@ -155,6 +171,7 @@ def run_single_model(cmd: list[str], log_path: Path, dry_run: bool) -> int:
 
 def main() -> int:
     args = parse_args()
+    model_names = MODEL_PRESETS[args.preset]
 
     run_root = Path(args.run_root)
     logs_dir = run_root / "logs"
@@ -164,11 +181,11 @@ def main() -> int:
     if extra_args and extra_args[0] == "--":
         extra_args = extra_args[1:]
 
-    total = len(MODEL_LIST)
+    total = len(model_names)
 
     # Dry-run prints the exact commands without changing persistent state.
     if args.dry_run:
-        for idx, model_name in enumerate(MODEL_LIST, start=1):
+        for idx, model_name in enumerate(model_names, start=1):
             model_checkpoint_dir = run_root / model_name
             log_path = logs_dir / f"{idx:02d}_{model_name}.log"
 
@@ -190,10 +207,10 @@ def main() -> int:
         return 0
 
     state_path = run_root / "batch_state.json"
-    state = load_or_init_state(state_path)
+    state = load_or_init_state(state_path, model_names)
     save_state(state_path, state)
 
-    for idx, model_name in enumerate(MODEL_LIST, start=1):
+    for idx, model_name in enumerate(model_names, start=1):
         model_state = state["models"][model_name]
         if model_state.get("status") == "completed" and not args.rerun_completed:
             print(f"[{idx}/{total}] Skip completed model: {model_name}")
@@ -251,8 +268,8 @@ def main() -> int:
 
         save_state(state_path, state)
 
-    failed = [m for m in MODEL_LIST if state["models"][m]["status"] == "failed"]
-    completed = [m for m in MODEL_LIST if state["models"][m]["status"] == "completed"]
+    failed = [m for m in model_names if state["models"][m]["status"] == "failed"]
+    completed = [m for m in model_names if state["models"][m]["status"] == "completed"]
 
     print("\nBatch finished.")
     print(f"Completed: {len(completed)}/{total}")

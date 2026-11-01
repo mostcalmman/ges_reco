@@ -147,3 +147,28 @@ test -f "$RESUME"
 训练参数优先级：common → 当前平台配置 → 选定dataset profile → CLI覆盖。不要修改 config.json 来回切换实验。当前 config 的 early_stopping=false、freeze_backbone=false 应保持；训练使用现有 label_smoothing=0.1、SGD momentum=0.9、多步衰减30/40/45乘0.1，以及既有训练随机采样、验证均匀采样和图像增强。seed固定随机数起点，不承诺跨平台或断点续训逐位一致。
 
 PyTorch 启动方式参考：https://github.com/pytorch/pytorch/blob/main/docs/source/distributed/elastic/train_script.md
+
+## 6. 复用 batch_train.py，统一读取 config.json（推荐）
+
+在 config.json 设置 common.dataset=jester；检查 datasets.jester.data_dir 为服务器路径，img_size=[100,100]、num_classes=27。common.hidden_dim=256、num_frames=16；其余超参数按自己的配置使用。Linux 自动使用 linux 节的 batch_size、num_workers 和 num_epochs。
+
+当前仓库配置：learning_rate=0.005、SGD、multistep、50轮、Linux batch_size=64、num_workers=16。这里不再用命令行覆盖这些参数；显存不足时在 config.json 调整 batch_size。
+
+```bash
+# 在仓库根目录、激活环境后：先预览五个模型
+python batch_train.py --preset jester_revision --run_root checkpoint/jester_revision --dry_run
+
+# 顺序训练，出错时停止
+python batch_train.py --preset jester_revision --run_root checkpoint/jester_revision --stop_on_error
+
+# 如果需要断开SSH后继续，用下面这一条代替上一条
+nohup python -u batch_train.py --preset jester_revision --run_root checkpoint/jester_revision --stop_on_error > jester_batch.log 2>&1 &
+```
+
+批量脚本只覆盖每次运行的模型名称和输出目录；所有训练超参数读取 config.json。默认保留现有训练流程的 Test 评估；想跳过时在命令末尾增加 `-- --skip_test`。
+
+无需设置环境变量即可启动。CUDA_VISIBLE_DEVICES 只用于指定GPU；PYTHONUTF8 用于强制UTF-8，Linux正常UTF-8环境一般不需要；PYTHONUNBUFFERED 和 python -u 都用于立即输出日志，二者选一个即可。批量脚本启动训练子进程时已经带-u。
+
+nohup用于使进程忽略终端挂断信号；末尾 & 放入后台；> 将输出写入文件，2>&1 将错误输出合并进去。这些用于后台运行，不影响训练参数。
+
+日志在 run_root/logs，权重在 run_root/模型名称，状态在 run_root/batch_state.json。再次执行跳过 completed 模型；失败或中断模型默认从头训练。配置或数据变化后使用新 run_root。当前 batch_train 是单进程启动，不要直接用 torchrun 启动批量脚本。

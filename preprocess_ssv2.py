@@ -12,6 +12,7 @@ import json
 import csv
 import argparse
 import shutil
+import bisect
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import cv2
@@ -35,6 +36,8 @@ def parse_args():
     parser.add_argument("--splits", type=str, nargs="+",
                         default=["Train", "Validation", "Test"],
                         help="要处理的数据集划分 (默认全部)")
+    parser.add_argument("--uniform_16", action=argparse.BooleanOptionalAction, default=True,
+                        help="按整个视频时间均匀抽16帧（默认）；--no-uniform_16 提取全部帧")
     return parser.parse_args()
 
 
@@ -94,53 +97,83 @@ def load_test_answers(csv_path, template_to_id):
 # ============================================================
 
 def extract_frames(args_tuple):
-    """提取单个视频的所有帧为 JPG，支持断点续跑"""
-    video_path, output_folder, jpg_quality = args_tuple
+    """Uniformly sample 16 timestamps across the video, or extract all frames."""
+    video_path, output_folder, jpg_quality, uniform_16 = args_tuple
     marker_path = os.path.join(output_folder, DONE_MARKER)
+    mode = 'uniform_time_16' if uniform_16 else 'all_frames'
+    if os.path.exists(marker_path):
+        try:
+            with open(marker_path, encoding='utf-8') as f:
+                marker = json.load(f)
+            count = marker.get('count', 0) if isinstance(marker, dict) else 0
+            if (isinstance(marker, dict) and marker.get('mode') == mode and count > 0
+                    and all(os.path.isfile(os.path.join(output_folder, f"{i:05d}.jpg"))
+                            for i in range(1, count + 1))):
+                return count, True
+        except (ValueError, OSError):
+            pass
 
-    # 仅当存在完成标记时才跳过；避免把半截目录误判为完成。
-    if os.path.exists(output_folder):
-        if os.path.exists(marker_path):
-            existing = [f for f in os.listdir(output_folder) if f.endswith(".jpg")]
-            if existing:
-                return len(existing), True  # (frame_count, skipped)
-        else:
-            # 目录存在但没有完成标记：视为中断残留，清理后重提取。
-            shutil.rmtree(output_folder, ignore_errors=True)
-
-    os.makedirs(output_folder, exist_ok=True)
-
+    # Decode first to obtain actual timestamps, avoiding unreliable frame-count metadata.
     cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        shutil.rmtree(output_folder, ignore_errors=True)
-        return 0, False
-
-    frame_idx = 0
-    while True:
+    timestamps = []
+    while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
-        frame_idx += 1
-        frame_path = os.path.join(output_folder, f"{frame_idx:05d}.jpg")
-        cv2.imwrite(frame_path, frame, [cv2.IMWRITE_JPEG_QUALITY, jpg_quality])
-
+        timestamps.append(cap.get(cv2.CAP_PROP_POS_MSEC))
     cap.release()
-
-    if frame_idx <= 0:
-        shutil.rmtree(output_folder, ignore_errors=True)
+    if not timestamps:
         return 0, False
+    selected = None
+    if uniform_16:
+        # Some backends expose no timestamps: uniform indices are the CFR fallback.
+        if not all(timestamps[i] > timestamps[i - 1] for i in range(1, len(timestamps))):
+            timestamps = list(range(len(timestamps)))
+        selected = []
+        for i in range(16):
+            target = timestamps[0] + (timestamps[-1] - timestamps[0]) * i / 15
+            j = min(bisect.bisect_left(timestamps, target), len(timestamps) - 1)
+            if j > 0 and target - timestamps[j - 1] < timestamps[j] - target:
+                j -= 1
+            selected.append(j)
 
-    with open(marker_path, "w", encoding="utf-8") as f:
-        f.write(str(frame_idx))
-
-    return frame_idx, False
+    # Old markers/modes must not leave stale frames in the output.
+    if os.path.isdir(output_folder):
+        shutil.rmtree(output_folder)
+    os.makedirs(output_folder, exist_ok=True)
+    cap = cv2.VideoCapture(video_path)
+    source_idx = 0
+    written = 0
+    try:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            copies = 1 if selected is None else selected.count(source_idx)
+            for _ in range(copies):
+                written += 1
+                path = os.path.join(output_folder, f"{written:05d}.jpg")
+                if not cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, jpg_quality]):
+                    raise OSError(f"Cannot write frame: {path}")
+            source_idx += 1
+            if selected is not None and written == 16:
+                break
+    finally:
+        cap.release()
+    expected = 16 if uniform_16 else len(timestamps)
+    if written != expected:
+        shutil.rmtree(output_folder)
+        return 0, False
+    with open(marker_path, 'w', encoding='utf-8') as f:
+        json.dump({'mode': mode, 'count': written}, f)
+    return written, False
 
 
 # ============================================================
 # Split 处理 & CSV 生成
 # ============================================================
 
-def process_split(split_name, records, video_dir, output_dir, workers, jpg_quality):
+def process_split(split_name, records, video_dir, output_dir, workers, jpg_quality, uniform_16=True):
     """处理一个 split，返回 {vid: frame_count}"""
     split_dir = os.path.join(output_dir, split_name)
     os.makedirs(split_dir, exist_ok=True)
@@ -149,7 +182,7 @@ def process_split(split_name, records, video_dir, output_dir, workers, jpg_quali
     for vid, _ in records:
         video_path = os.path.join(video_dir, f"{vid}.webm")
         output_folder = os.path.join(split_dir, vid)
-        tasks.append((video_path, output_folder, jpg_quality))
+        tasks.append((video_path, output_folder, jpg_quality, uniform_16))
 
     print(f"\n{'=' * 60}")
     print(f"处理 {split_name}: {len(tasks)} 个视频 → {split_dir}")
@@ -253,7 +286,7 @@ def main():
 
         frame_counts = process_split(
             split_name, records, args.video_dir, args.output_dir,
-            args.workers, args.jpg_quality,
+            args.workers, args.jpg_quality, args.uniform_16,
         )
 
         csv_path = os.path.join(args.output_dir, f"{split_name}.csv")
