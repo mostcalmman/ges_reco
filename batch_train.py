@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Batch run train.py for a fixed model list (long-running friendly)."
     )
-    parser.add_argument("--preset", choices=MODEL_PRESETS, default="default",
+    parser.add_argument("--preset", choices=[*MODEL_PRESETS, "ssv2_revision"], default="default",
                         help="Model group; jester_revision selects the five Micro experiments.")
     parser.add_argument(
         "--python",
@@ -171,7 +171,20 @@ def run_single_model(cmd: list[str], log_path: Path, dry_run: bool) -> int:
 
 def main() -> int:
     args = parse_args()
-    model_names = MODEL_PRESETS[args.preset]
+    if args.preset == "ssv2_revision":
+        with open("config.json", encoding="utf-8") as f:
+            batch_config = json.load(f)
+        if batch_config.get("common", {}).get("dataset") != "ssv2":
+            raise ValueError("ssv2_revision requires common.dataset=ssv2 in config.json")
+        jobs = batch_config.get("batch_runs", {}).get(args.preset, [])
+        if not jobs:
+            raise ValueError("Missing batch_runs.ssv2_revision in config.json")
+        job_by_name = {job['name']: job for job in jobs}
+        if len(job_by_name) != len(jobs):
+            raise ValueError("Batch experiment names must be unique")
+    else:
+        job_by_name = {name: {'model_type': name} for name in MODEL_PRESETS[args.preset]}
+    model_names = list(job_by_name)
 
     run_root = Path(args.run_root)
     logs_dir = run_root / "logs"
@@ -194,10 +207,12 @@ def main() -> int:
                 "-u",
                 "train.py",
                 "--model_type",
-                model_name,
+                job_by_name[model_name]["model_type"],
                 "--checkpoint_dir",
                 str(model_checkpoint_dir),
             ]
+            if "img_size" in job_by_name[model_name]:
+                cmd.extend(["--img_size", str(job_by_name[model_name]["img_size"])])
             cmd.extend(extra_args)
 
             run_single_model(cmd, log_path, dry_run=True)
@@ -224,10 +239,12 @@ def main() -> int:
             "-u",
             "train.py",
             "--model_type",
-            model_name,
+            job_by_name[model_name]["model_type"],
             "--checkpoint_dir",
             str(model_checkpoint_dir),
         ]
+        if "img_size" in job_by_name[model_name]:
+            cmd.extend(["--img_size", str(job_by_name[model_name]["img_size"])])
         cmd.extend(extra_args)
 
         model_state["status"] = "running"
