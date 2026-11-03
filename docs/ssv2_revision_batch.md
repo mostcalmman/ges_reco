@@ -24,18 +24,18 @@ tail -f ssv2_batch.log
 
 | 序号 | 模型 | 分辨率 | 审稿要求 |
 |---|---|---|---|
-| 1 | ResNet50_TSN | 224 | R2-1 无模块基线 |
-| 2 | ResNet50_OnlyACSS | 224 | R2-1 仅 ACSS |
-| 3 | ResNet50_OnlyTMF3 | 224 | R2-1 仅 DTMF |
-| 4 | ResNet50_ACSSTMF3 | 224 | R2-1 完整模型 / R1-5 Heavy 同设置对照 |
-| 5 | LightTMF3GRU | 112 | R2-2 Micro 低分辨率 / R1-2 原布局 / R1-5 Micro 同设置对照 |
-| 6 | LightTMF3GRU | 224 | R2-2 Micro 高分辨率 |
-| 7 | MobileNetV2_ACSSTMF3 | 112 | R2-2 Mobile 低分辨率 / R1-5 Mobile 同设置对照 |
-| 8 | MobileNetV2_ACSSTMF3 | 224 | R2-2 Mobile 高分辨率 |
-| 9 | LightTMF3GRU_SwapPlacement | 112 | R1-2 Micro 交换布局 |
-| 10 | LightTSMGRU | 112 | R1-5 Micro TSM |
-| 11 | MobileNetV2_TSM | 112 | R1-5 Mobile TSM |
-| 12 | ResNet50_TSM | 224 | R1-5 Heavy TSM |
+| 1 | LightTMF3GRU | 112 | R2-2 Micro 低分辨率 / R1-2 原布局 / R1-5 Micro 同设置对照 |
+| 2 | LightTMF3GRU_SwapPlacement | 112 | R1-2 Micro 交换布局 |
+| 3 | LightTMF3GRU | 224 | R2-2 Micro 高分辨率 |
+| 4 | MobileNetV2_ACSSTMF3 | 112 | R2-2 Mobile 低分辨率 / R1-5 Mobile 同设置对照 |
+| 5 | MobileNetV2_ACSSTMF3 | 224 | R2-2 Mobile 高分辨率 |
+| 6 | LightTSMGRU | 112 | R1-5 Micro TSM |
+| 7 | MobileNetV2_TSM | 112 | R1-5 Mobile TSM |
+| 8 | ResNet50_TSM | 224 | R1-5 Heavy TSM |
+| 9 | ResNet50_ACSSTMF3 | 224 | R2-1 完整模型 / R1-5 Heavy 同设置对照 |
+| 10 | ResNet50_TSN | 224 | R2-1 无模块基线 |
+| 11 | ResNet50_OnlyACSS | 224 | R2-1 仅 ACSS |
+| 12 | ResNet50_OnlyTMF3 | 224 | R2-1 仅 DTMF |
 
 完整目录映射记录在 `run_root/logs/checkpoint_reviews.log`，每组训练日志也记录本组对应的意见。
 
