@@ -124,7 +124,7 @@ def save_state(state_path: Path, state: dict) -> None:
     tmp_path.replace(state_path)
 
 
-def run_single_model(cmd: list[str], log_path: Path, dry_run: bool) -> int:
+def run_single_model(cmd: list[str], log_path: Path, dry_run: bool, review_line: str = "") -> int:
     print("=" * 80)
     print(f"[{now_str()}] Running: {' '.join(cmd)}")
     print(f"Log file: {log_path}")
@@ -136,6 +136,8 @@ def run_single_model(cmd: list[str], log_path: Path, dry_run: bool) -> int:
     with log_path.open("a", encoding="utf-8") as log_file:
         log_file.write("\n" + "=" * 80 + "\n")
         log_file.write(f"[{now_str()}] CMD: {' '.join(cmd)}\n")
+        if review_line:
+            log_file.write(review_line + "\n")
         log_file.flush()
 
         proc = subprocess.Popen(
@@ -193,6 +195,16 @@ def main() -> int:
     extra_args = list(args.train_args)
     if extra_args and extra_args[0] == "--":
         extra_args = extra_args[1:]
+
+    review_lines = {
+        name: f"{run_root / name} | {job['review']}"
+        for name, job in job_by_name.items() if job.get("review")
+    }
+    if review_lines:
+        mapping = "\n".join(review_lines.values()) + "\n"
+        print(mapping, end="")
+        if not args.dry_run:
+            (logs_dir / "checkpoint_reviews.log").write_text(mapping, encoding="utf-8")
 
     total = len(model_names)
 
@@ -258,7 +270,7 @@ def main() -> int:
 
         begin = time.time()
         try:
-            return_code = run_single_model(cmd, log_path, args.dry_run)
+            return_code = run_single_model(cmd, log_path, args.dry_run, review_lines.get(model_name, ""))
         except KeyboardInterrupt:
             model_state["status"] = "interrupted"
             model_state["end_time"] = now_str()

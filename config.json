@@ -58,64 +58,76 @@
     "batch_runs": {
         "ssv2_revision": [
             {
-                "name": "LightTSMGRU_112",
-                "model_type": "LightTSMGRU",
-                "img_size": 112
-            },
-            {
-                "name": "LightTMF3GRU_112",
-                "model_type": "LightTMF3GRU",
-                "img_size": 112
-            },
-            {
-                "name": "MobileNetV2_TSM_112",
-                "model_type": "MobileNetV2_TSM",
-                "img_size": 112
-            },
-            {
-                "name": "MobileNetV2_ACSSTMF3_112",
-                "model_type": "MobileNetV2_ACSSTMF3",
-                "img_size": 112
-            },
-            {
-                "name": "ResNet50_TSM_224",
-                "model_type": "ResNet50_TSM",
-                "img_size": 224
-            },
-            {
-                "name": "ResNet50_ACSSTMF3_224",
-                "model_type": "ResNet50_ACSSTMF3",
-                "img_size": 224
-            },
-            {
                 "name": "ResNet50_TSN_224",
                 "model_type": "ResNet50_TSN",
-                "img_size": 224
+                "img_size": 224,
+                "review": "R2-1 无模块基线"
             },
             {
                 "name": "ResNet50_OnlyACSS_224",
                 "model_type": "ResNet50_OnlyACSS",
-                "img_size": 224
+                "img_size": 224,
+                "review": "R2-1 仅 ACSS"
             },
             {
                 "name": "ResNet50_OnlyTMF3_224",
                 "model_type": "ResNet50_OnlyTMF3",
-                "img_size": 224
+                "img_size": 224,
+                "review": "R2-1 仅 DTMF"
+            },
+            {
+                "name": "ResNet50_ACSSTMF3_224",
+                "model_type": "ResNet50_ACSSTMF3",
+                "img_size": 224,
+                "review": "R2-1 完整模型 / R1-5 Heavy 同设置对照"
+            },
+            {
+                "name": "LightTMF3GRU_112",
+                "model_type": "LightTMF3GRU",
+                "img_size": 112,
+                "review": "R2-2 Micro 低分辨率 / R1-2 原布局 / R1-5 Micro 同设置对照"
             },
             {
                 "name": "LightTMF3GRU_224",
                 "model_type": "LightTMF3GRU",
-                "img_size": 224
+                "img_size": 224,
+                "review": "R2-2 Micro 高分辨率"
+            },
+            {
+                "name": "MobileNetV2_ACSSTMF3_112",
+                "model_type": "MobileNetV2_ACSSTMF3",
+                "img_size": 112,
+                "review": "R2-2 Mobile 低分辨率 / R1-5 Mobile 同设置对照"
             },
             {
                 "name": "MobileNetV2_ACSSTMF3_224",
                 "model_type": "MobileNetV2_ACSSTMF3",
-                "img_size": 224
+                "img_size": 224,
+                "review": "R2-2 Mobile 高分辨率"
             },
             {
                 "name": "LightTMF3GRU_SwapPlacement_112",
                 "model_type": "LightTMF3GRU_SwapPlacement",
-                "img_size": 112
+                "img_size": 112,
+                "review": "R1-2 Micro 交换布局"
+            },
+            {
+                "name": "LightTSMGRU_112",
+                "model_type": "LightTSMGRU",
+                "img_size": 112,
+                "review": "R1-5 Micro TSM"
+            },
+            {
+                "name": "MobileNetV2_TSM_112",
+                "model_type": "MobileNetV2_TSM",
+                "img_size": 112,
+                "review": "R1-5 Mobile TSM"
+            },
+            {
+                "name": "ResNet50_TSM_224",
+                "model_type": "ResNet50_TSM",
+                "img_size": 224,
+                "review": "R1-5 Heavy TSM"
             }
         ]
     }
