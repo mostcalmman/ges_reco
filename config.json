@@ -1,8 +1,8 @@
 {
     "_comment": "手势识别项目配置文件 - 根据平台自动选择合适的配置",
     "common": {
-        "dataset": "ssv2",
-        "model_type": "ResNet50",
+        "dataset": "jester",
+        "model_type": "LiteResNetGRU_ACSS_New_DTMF",
         "freeze_backbone": false,
         "checkpoint_dir": "checkpoint",
         "optimizer": "adamw",
@@ -49,7 +49,7 @@
         "num_epochs": 20
     },
     "linux": {
-        "batch_size": 16,
+        "batch_size": 64,
         "num_workers": 16,
         "pin_memory": true,
         "prefetch_factor": 8,
