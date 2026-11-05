@@ -16,7 +16,9 @@ def build_model(model_type, config, pretrained=None, freeze_backbone=None, devic
         "LightTMF3GRU_ShortOnly": LightTMF3GRU_ShortOnly,
         "LightTMF3GRU_NoSpatial": LightTMF3GRU_NoSpatial,
     }
-    if model_type in revision_models:
+    if model_type == "LiteResNetGRU_ACSS_New_DTMF":
+        model = LiteResNetGRU_ACSS_New_DTMF(num_classes, num_frames, hidden_dim)
+    elif model_type in revision_models:
         model = revision_models[model_type](num_classes, num_frames, hidden_dim)
     elif model_type == "LightTMF3_NoGRU":
         model = LightTMF3_NoGRU(num_classes, num_frames)

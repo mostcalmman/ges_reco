@@ -759,6 +759,115 @@ class ACSSResBlock(nn.Module):
         return out  # (B*T, C_out, H_out, W_out)
 
 
+# [AQ] R1-1
+# ACSS_New
+class ACSS_New(nn.Module):
+    """Predict per-channel shift weights using all channels of the current frame."""
+
+    def __init__(self, channels, n_segment):
+        super().__init__()
+        self.channels = channels
+        self.n_segment = n_segment
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.conv1d = nn.Conv1d(channels, 3 * channels, kernel_size=1, groups=1)
+
+    def forward(self, x, n_segment=None):
+        """
+        Args:
+            x: Input tensor, shape (B*T, C, H, W).
+            n_segment: Override for temporal segments. Uses self.n_segment if None.
+
+        Returns:
+            Tensor of same shape (B*T, C, H, W) with input-dependent soft
+            temporal shift applied.
+        """
+        if n_segment is None:
+            n_segment = self.n_segment
+
+        if n_segment <= 1:
+            return x
+
+        BT, C, H, W = x.size()
+        B = BT // n_segment
+        T = n_segment
+
+        # 1. Global average pooling → per-channel temporal descriptor
+        feat = self.avg_pool(x)                            # (B*T, C, 1, 1)
+        feat = feat.view(B, T, C).permute(0, 2, 1)         # (B, C, T)
+
+        # 2. Pointwise channel projection → 3-way shift logits
+        shift_logits = self.conv1d(feat)                   # (B, 3*C, T)
+        shift_logits = shift_logits.view(B, C, 3, T)       # (B, C, 3, T)
+        shift_logits = shift_logits.permute(0, 3, 1, 2)    # (B, T, C, 3)
+        shift_logits = shift_logits.reshape(BT, C, 3)      # (B*T, C, 3)
+
+        # 3. Softmax over {left, static, right}
+        weights = F.softmax(shift_logits, dim=-1,
+                            dtype=torch.float32)          # (B*T, C, 3)
+        w_left   = weights[:, :, 0].view(BT, C, 1, 1)     # pull from t+1
+        w_static = weights[:, :, 1].view(BT, C, 1, 1)     # keep current
+        w_right  = weights[:, :, 2].view(BT, C, 1, 1)     # pull from t-1
+
+        # 4. Build temporal neighbors with zero-padding at boundaries
+        x_5d = x.view(B, T, C, H, W)
+
+        x_prev = torch.zeros_like(x_5d)
+        x_prev[:, 1:] = x_5d[:, :-1]                      # X_{t-1}
+
+        x_next = torch.zeros_like(x_5d)
+        x_next[:, :-1] = x_5d[:, 1:]                      # X_{t+1}
+
+        # Flatten back to (B*T, C, H, W)
+        x_flat      = x_5d.view(BT, C, H, W)
+        x_prev_flat = x_prev.view(BT, C, H, W)
+        x_next_flat = x_next.view(BT, C, H, W)
+
+        # 5. Soft temporal blend
+        out = (w_left * x_next_flat
+               + w_static * x_flat
+               + w_right * x_prev_flat)
+
+        return out
+
+
+class ACSSNewResBlock(nn.Module):
+    """Apply ACSS_New before the first residual-branch convolution."""
+
+    def __init__(self, in_channels, out_channels, stride=1, n_segment=8):
+        super(ACSSNewResBlock, self).__init__()
+        self.n_segment = n_segment
+
+        # Adaptive soft temporal shift (replaces hard temporal_shift)
+        self.acss = ACSS_New(in_channels, n_segment)
+
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # Projection shortcut when dimensions change
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        identity = self.shortcut(x)
+
+        # Learnable soft temporal shift before first conv
+        out = self.acss(x)
+        out = F.relu(self.bn1(self.conv1(out)))
+        out = self.bn2(self.conv2(out))
+
+        out += identity
+        out = F.relu(out)
+        return out
+
 # --------------------------
 # MARK: ACSS_1
 # Input-Dependent Adaptive Channel Soft Shift
